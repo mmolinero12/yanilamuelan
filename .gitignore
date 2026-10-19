@@ -8,3 +8,16 @@ node_modules/
 .idea/
 *.log
 venv-integracion/
+
+
+# Entornos virtuales de desarrollo local
+.venv-frontend/
+.venv-backend/
+
+# Archivos de configuración sensibles
+.env.*
+!.env.example
+
+# Persistencia local de ChromaDB
+chroma_db/
+.chroma/
