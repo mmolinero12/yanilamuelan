@@ -6,7 +6,7 @@ Implementa la lógica pura de segmentación por párrafos y frases respetando so
 import re
 import logging
 # Usaremos variables de ambiente para CHUNK_SIZE, CHUNK_OVERLAP
-from utils.config import CHUNK_SIZE, CHUNK_OVERLAP
+from ..utils.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 logger = logging.getLogger(__name__)
 

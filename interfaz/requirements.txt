@@ -1,1 +1,6 @@
-streamlit>=1.38
+# streamlit>=1.38
+
+# Para OCI:
+streamlit==1.66.0
+requests
+python-dotenv

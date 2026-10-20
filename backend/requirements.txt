@@ -3,5 +3,9 @@ pydantic
 pydantic-settings
 python-dotenv
 uvicorn
+python-multipart
+python-docx
+python-pptx
+-r ../ingesta-rag/requirements.txt
 
 

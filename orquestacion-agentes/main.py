@@ -26,6 +26,8 @@ from pathlib import Path
 # sin importar desde qué carpeta se ejecute este archivo.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
+from shared.config import ENV_FILE
+from shared.gemini_transport import gemini_client_args
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -36,7 +38,7 @@ from shared.contratos import (
     ContenidoQuiz,
 )
 
-load_dotenv()
+load_dotenv(ENV_FILE, override=False)
 logger = logging.getLogger(__name__)
 
 MODELO_POR_DEFECTO = "gemini-3.6-flash"
@@ -130,6 +132,7 @@ def _get_llm(modelo: str, api_key: str) -> ChatGoogleGenerativeAI:
         model=modelo,
         google_api_key=api_key,
         max_retries=1,
+        client_args=gemini_client_args(),
     )
 
 
@@ -143,6 +146,11 @@ def _es_error_de_cuota(error: Exception) -> bool:
     """429: esta key agotó su cupo, otra key puede tener."""
     texto = f"{type(error).__name__} {error}".upper()
     return "RESOURCE_EXHAUSTED" in texto or "RATELIMIT" in texto or "429" in texto
+
+
+def _es_error_de_clave(error: Exception) -> bool:
+    texto = str(error).upper()
+    return any(code in texto for code in ("API_KEY_INVALID", "API_KEY_EXPIRED", "UNAUTHENTICATED"))
 
 
 def _invocar_con_rotacion(modelo_formato, prompt: str):
@@ -165,11 +173,11 @@ def _invocar_con_rotacion(modelo_formato, prompt: str):
                 resultado = llm.invoke(prompt)
             except Exception as error:
                 if _es_error_de_sobrecarga(error):
-                    logger.warning("El modelo %s está saturado, se prueba el siguiente: %s", modelo, error)
+                    logger.warning("El modelo %s está saturado, se prueba el siguiente", modelo)
                     ultimo_error = error
                     break  # con el modelo saturado otra key no ayuda: siguiente modelo
-                if _es_error_de_cuota(error):
-                    logger.warning("La API key %d no tiene cupo, se prueba la siguiente: %s", indice + 1, error)
+                if _es_error_de_cuota(error) or _es_error_de_clave(error):
+                    logger.warning("La credencial %d no es utilizable, se prueba la siguiente", indice + 1)
                     ultimo_error = error
                     continue
                 raise
@@ -255,7 +263,7 @@ def generar_contenido_adaptado(
     except ErrorGeneracion:
         raise
     except Exception as error:
-        logger.warning("Falló la generación con Gemini: %s", error)
+        logger.warning("Falló la generación con Gemini (%s)", type(error).__name__)
         raise ErrorGeneracion(
             f"No se pudo generar el contenido con Gemini ({type(error).__name__}). "
             "Intentá de nuevo en unos minutos."

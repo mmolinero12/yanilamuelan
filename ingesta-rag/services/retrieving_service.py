@@ -6,11 +6,11 @@ Expone una interfaz simple para backend/orquestación.
 
 from typing import List
 
-from models.vector_db import buscar_en_chroma
-from contratos import ChunkResultado    # Importación de los Contratos
-from services.embedding_service import GeminiEmbeddingsResiliente
-from utils.key_manager import KeyManager
-from utils.config import GEMINI_API_KEYS
+from ..models.vector_db import buscar_en_chroma
+from shared.contratos import ChunkResultado
+from .embedding_service import GeminiEmbeddingsResiliente
+from ..utils.key_manager import KeyManager
+from ..utils.config import GEMINI_API_KEYS
 
 
 # Servicio compartido de embeddings
@@ -68,8 +68,6 @@ def buscar_contexto(
     for i, chunk in enumerate(resultados, 1):
         score_val = getattr(chunk, 'score', 0.0)
         fuente_val = getattr(chunk, 'fuente', 'N/A')
-        texto_val = getattr(chunk, 'texto', '')
         print(f" [{i}] Score: {score_val:.4f} | Fuente: {fuente_val}")
-        print(f" Texto: {texto_val[:120]}...\n")
 
     return resultados

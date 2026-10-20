@@ -9,11 +9,10 @@ import logging
 
 # Importamos las estructuras de datos definidas en el contrato unificado
 # (Asumiendo que el archivo de contratos se llama contratos.py)
-from contratos import ChunkResultado
+from shared.contratos import ChunkResultado
 
 # Importamos los servicios internos que ya construimos
-from services.indexing_service import indexar_documento as _indexar_impl
-from services.embedding_service import GeminiEmbeddingsResiliente
+from .indexing_service import indexar_documento as _indexar_impl
 
 logger = logging.getLogger(__name__)
 

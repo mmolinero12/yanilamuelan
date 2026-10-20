@@ -224,6 +224,14 @@ def test_recuerda_la_ultima_key_que_funciono(monkeypatch):
     assert con_cupo.llamadas == 2
 
 
+def test_clave_invalida_no_impide_usar_otra_configurada(monkeypatch):
+    invalida = LlmFalso(error=RuntimeError("400 API_KEY_INVALID"))
+    valida = LlmFalso(resultado=_quiz())
+    _usar_llms(monkeypatch, {"invalida": invalida, "valida": valida})
+    assert _generar().titulo == "Titulo"
+    assert invalida.llamadas == valida.llamadas == 1
+
+
 def test_si_todas_las_keys_estan_agotadas_lanza_error_generacion(monkeypatch):
     _usar_llms(
         monkeypatch,

@@ -16,16 +16,11 @@ def procesar_y_continuar():
         archivo = st.session_state['archivo_temporal']
         contenido_bytes = archivo.getvalue()
 
-        # Extracción del contenido previamente subido
-        try:
-            texto_extraido = contenido_bytes.decode("utf-8")
-        except Exception:
-            texto_extraido = f"Documento binario subido({archivo.name})"
-
-        # Guarda datos en session_state para Backend
+        # El backend extrae el texto; el frontend conserva los bytes originales.
         st.session_state['documento_titulo'] = archivo.name
-        st.session_state['documento_contenido'] = texto_extraido
         st.session_state['archivo_bytes'] = contenido_bytes
+        st.session_state['resultado'] = None
+        st.session_state.pop('error_generacion', None)
         
         # Avanza a la pantalla 2
         st.session_state['paso_actual'] = 2

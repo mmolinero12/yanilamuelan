@@ -1,12 +1,6 @@
-class OrchestrationService:
+from shared.module_loader import load_module
 
-    def generar(
-        self,
-        documento_titulo,
-        contexto,
-        perfil_destinatario,
-        formato_salida,
-        nicho_sector,
-        nivel_detalle
-    ):
-        ...
+
+class OrchestrationService:
+    def generar(self, **parametros):
+        return load_module("orquestacion_agentes", "main").generar_contenido_adaptado(**parametros)

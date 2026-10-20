@@ -9,8 +9,8 @@ from typing import List
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
-from contratos import ChunkResultado
-from utils.config import CHROMA_PERSIST_DIR, NOMBRE_COLECCION
+from shared.contratos import ChunkResultado
+from ..utils.config import CHROMA_PERSIST_DIR, NOMBRE_COLECCION
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,8 @@ def indexar_en_chroma(chunks: List[str], documento_titulo: str, embedding_functi
         logger.info(f"Documento '{documento_titulo}' indexado exitosamente con doc_id: {doc_id}")
         return doc_id
     except Exception as e:
-        logger.error(f"Error al indexar en ChromaDB: {str(e)}")
-        raise RuntimeError(f"Fallo en la persistencia vectorial: {str(e)}")
+        logger.error("Error al indexar en ChromaDB (%s)", type(e).__name__)
+        raise RuntimeError("Fallo en la persistencia vectorial.") from e
 
 
 def buscar_en_chroma(doc_id: str, query: str, embedding_function: Embeddings, top_k: int = 5) -> List[ChunkResultado]:
@@ -77,5 +77,5 @@ def buscar_en_chroma(doc_id: str, query: str, embedding_function: Embeddings, to
             )
         return resultados_formateados
     except Exception as e:
-        logger.error(f"Error al buscar en ChromaDB para doc_id {doc_id}: {str(e)}")
-        raise RuntimeError(f"Fallo en la búsqueda de contexto: {str(e)}")
+        logger.error("Error al buscar en ChromaDB para %s (%s)", doc_id, type(e).__name__)
+        raise RuntimeError("Fallo en la búsqueda de contexto.") from e

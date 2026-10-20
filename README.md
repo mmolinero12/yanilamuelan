@@ -1,5 +1,7 @@
 # NuevaMente — Sistema Inteligente de Adaptación de Contenido Educativo
 
+Guía del flujo real en Windows: [ejecución local y verificación](docs/ejecucion-local.md).
+
 Proyecto desarrollado para el **Hackathon ONE — Grupo 10 (Oracle Next Education & Alura)**
 Equipo: G10-LATAM Equipo 33
 

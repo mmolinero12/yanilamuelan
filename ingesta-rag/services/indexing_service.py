@@ -4,11 +4,11 @@ Descripción: Expone la función principal 'indexar_documento' requerida en cont
 """
 
 import logging
-from services.chunker import dividir_texto
-from services.embedding_service import GeminiEmbeddingsResiliente
-from models.vector_db import indexar_en_chroma
-from utils.key_manager import KeyManager
-from utils.config import GEMINI_API_KEYS, CHUNK_SIZE, CHUNK_OVERLAP
+from .chunker import dividir_texto
+from .embedding_service import GeminiEmbeddingsResiliente
+from ..models.vector_db import indexar_en_chroma
+from ..utils.key_manager import KeyManager
+from ..utils.config import GEMINI_API_KEYS, CHUNK_SIZE, CHUNK_OVERLAP
 
 logger = logging.getLogger(__name__)
 

@@ -164,6 +164,14 @@ def test_evaluar_contenido_devuelve_evaluacion_por_defecto_si_falla_el_llm(monke
     assert "RuntimeError" in r.observaciones
 
 
+def test_clave_invalida_no_impide_evaluar_con_otra(monkeypatch):
+    invalida = JuezFalso(error=RuntimeError("400 API_KEY_INVALID"))
+    valida = JuezFalso(resultado=_un_item_respaldado())
+    _usar_jueces(monkeypatch, {"invalida": invalida, "valida": valida})
+    assert _evaluar().claridad_pedagogica != "No evaluada"
+    assert invalida.llamadas == valida.llamadas == 1
+
+
 def test_sin_api_key_devuelve_evaluacion_por_defecto(monkeypatch):
     monkeypatch.setattr(evaluador, "_obtener_api_keys", lambda: [])
 

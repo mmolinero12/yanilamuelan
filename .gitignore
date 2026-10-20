@@ -21,3 +21,5 @@ venv-integracion/
 # Persistencia local de ChromaDB
 chroma_db/
 .chroma/
+data/documents/
+data/generated/

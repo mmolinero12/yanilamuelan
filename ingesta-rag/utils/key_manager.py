@@ -55,6 +55,6 @@ class KeyManager:
         Marca una API Key como no disponible temporalmente y conmuta
         a la siguiente disponible.
         """
-        logger.warning(f"Marcando API Key (...{key[-4:] if len(key) >= 4 else key}) como inválida. Razón: {razon}")
+        logger.warning(f"Marcando API Key [activa] como inválida. Razón: {razon}")
         self._keys_invalidas.add(key)
         return self._rotar_siguiente()

@@ -1,7 +1,5 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+from shared.config import project_path
 
 # ==========================================
 # 1. GEMINI - API KEYS
@@ -33,6 +31,7 @@ MODELO_EMBEDDINGS = os.getenv(
 # 3. CHUNKING
 # ==========================================
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
+MAX_EMBEDDING_ATTEMPTS = max(1, int(os.getenv("MAX_EMBEDDING_ATTEMPTS", "4")))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
 
 if CHUNK_SIZE <= 0:
@@ -48,10 +47,10 @@ if CHUNK_OVERLAP < 0 or CHUNK_OVERLAP >= CHUNK_SIZE:
 # ==========================================
 # 4. CHROMADB
 # ==========================================
-CHROMA_PERSIST_DIR = os.getenv(
+CHROMA_PERSIST_DIR = str(project_path(os.getenv(
     "CHROMA_PERSIST_DIR",
     "./chroma_db"
-)
+)))
 
 NOMBRE_COLECCION = os.getenv(
     "NOMBRE_COLECCION",

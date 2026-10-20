@@ -1,0 +1,2044 @@
+diff --git a/.gitignore b/.gitignore
+index 92fd871e59d7cfb52facf5a526b896bb7a5e4786..7d0eff10f59af566c4e653f6250563b5edb3c009 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -20,4 +20,6 @@ venv-integracion/
+ 
+ # Persistencia local de ChromaDB
+ chroma_db/
+-.chroma/
+\ No newline at end of file
++.chroma/
++data/documents/
++data/generated/
+diff --git a/README.md b/README.md
+index 3561def2f0f1d16866408f4f4f937f54ac4fc6e8..a3ee67c1ebc889138623f865feec8fb0444f1792 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,7 @@
+ # NuevaMente — Sistema Inteligente de Adaptación de Contenido Educativo
+ 
++Guía del flujo real en Windows: [ejecución local y verificación](docs/ejecucion-local.md).
++
+ Proyecto desarrollado para el **Hackathon ONE — Grupo 10 (Oracle Next Education & Alura)**
+ Equipo: G10-LATAM Equipo 33
+ 
+@@ -20,4 +22,4 @@ RAG (Retrieval-Augmented Generation) y orquestación de agentes/LLM.
+ ## Estado
+ En desarrollo — MVP para Hackathon ONE G10
+ 
+-## Equipo
+\ No newline at end of file
++## Equipo
+diff --git a/backend/README.MD b/backend/README.MD
+index caa724cc7dd80132edfb598debf442324191a6c4..5be7c384dda6f4943fc1dc3a03763501dc98d32e 100644
+--- a/backend/README.MD
++++ b/backend/README.MD
+@@ -1,5 +1,9 @@
+ Backend - Servicio de Adaptación
+ 
++> Guía vigente para el flujo real, entorno Windows y configuración centralizada:
++> [Ejecución local](../docs/ejecucion-local.md). El endpoint actual recibe multipart;
++> los ejemplos JSON y el archivo `.env` por módulo de esta documentación anterior ya no aplican.
++
+ Este módulo contiene la API backend construida con FastAPI, encargada de gestionar los servicios de adaptación, RAG, orquestación, evaluación y almacenamiento.
+ 
+ 📁 Estructura del Proyecto
+@@ -132,4 +136,4 @@ Respuesta Esperada (200 OK)
+ 
+ ⚠️ IMPORTANTE: Nunca subas el archivo .env real ni ninguna clave/API Key privada a repositorios de control de versiones públicos o compartidos.
+ 
+-Asegúrate de añadir .env al archivo .gitignore de la raíz de tu proyecto.
+\ No newline at end of file
++Asegúrate de añadir .env al archivo .gitignore de la raíz de tu proyecto.
+diff --git a/backend/api/adaptation.py b/backend/api/adaptation.py
+index b4bfd9ae59e574dcf2ff3c4346ee7225a9e9f720..af6a74712d9e9c7a72995ba7551e0f9f6eeb308f 100644
+--- a/backend/api/adaptation.py
++++ b/backend/api/adaptation.py
+@@ -1,7 +1,7 @@
+-from fastapi import APIRouter
++from fastapi import APIRouter, File, Form, UploadFile
+ 
+-from schemas.request import AdaptacionRequest
+-from services.adaptation_service import adaptar_contenido
++from backend.services.adaptation_service import adaptar_archivo
++from shared.contratos import RespuestaFinal
+ 
+ router = APIRouter(
+     prefix="/adapt",
+@@ -9,6 +9,16 @@ router = APIRouter(
+ )
+ 
+ 
+-@router.post("")
+-def adapt(request: AdaptacionRequest):
+-    return adaptar_contenido(request)
+\ No newline at end of file
++@router.post("", response_model=RespuestaFinal, response_model_exclude_none=True)
++def adapt(
++    archivo: UploadFile = File(...),
++    perfil_destinatario: str = Form(..., min_length=1),
++    formato_salida: str = Form(..., min_length=1),
++    nicho_sector: str = Form(..., min_length=1),
++    nivel_detalle: str = Form(..., min_length=1),
++):
++    try:
++        return adaptar_archivo(archivo, perfil_destinatario, formato_salida,
++                               nicho_sector, nivel_detalle)
++    finally:
++        archivo.file.close()
+diff --git a/backend/app.py b/backend/app.py
+index 32f34ee6cc2c89c91ccaf9649ae0dd38792797bf..9491e4b7bac24d569790e5a21e559cb768bc7249 100644
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -1,7 +1,17 @@
+-from fastapi import FastAPI
++import sys
++from pathlib import Path
+ 
+-from core.config import settings
+-from api.adaptation import router as adaptation_router
++# Admite uvicorn backend.app:app y app:app desde backend/.
++ROOT = str(Path(__file__).resolve().parents[1])
++if ROOT not in sys.path:
++    sys.path.insert(0, ROOT)
++
++from fastapi import FastAPI, Request
++from fastapi.responses import JSONResponse
++
++from backend.core.config import settings
++from backend.core.exceptions import PipelineError
++from backend.api.adaptation import router as adaptation_router
+ 
+ 
+ app = FastAPI(
+@@ -11,6 +21,12 @@ app = FastAPI(
+ )
+ 
+ 
++@app.exception_handler(PipelineError)
++async def pipeline_error_handler(request: Request, error: PipelineError):
++    return JSONResponse(status_code=error.status_code,
++                        content={"detail": {"etapa": error.etapa, "mensaje": str(error)}})
++
++
+ @app.get(f"{settings.api_prefix}/health")
+ def health():
+     return {
+@@ -24,4 +40,4 @@ def health():
+ app.include_router(
+     adaptation_router,
+     prefix=settings.api_prefix,
+-)
+\ No newline at end of file
++)
+diff --git a/backend/core/config.py b/backend/core/config.py
+index 6f43354a65e859ed4e8864f20f6ff34f3ebb7c6b..69f5b7581661c49e52bc72dfd8cad51a7919f409 100644
+--- a/backend/core/config.py
++++ b/backend/core/config.py
+@@ -1,11 +1,13 @@
+ from pydantic_settings import BaseSettings, SettingsConfigDict
++from pydantic import AliasChoices, Field, field_validator
++from shared.config import ENV_FILE
+ 
+ class Settings(BaseSettings):
+ 
+     app_name: str = "NuevaMente"
+     app_version: str = "0.1.0"
+     app_env: str = "development"
+-    debug: bool = True
++    debug: bool = Field(default=False, validation_alias=AliasChoices("APP_DEBUG", "DEBUG"))
+ 
+     api_host: str = "0.0.0.0"
+     api_port: int = 8000
+@@ -17,8 +19,8 @@ class Settings(BaseSettings):
+     openai_api_key: str | None = None
+     anthropic_api_key: str | None = None
+ 
+-    vector_store: str = "faiss"
+-    top_k: int = 5
++    vector_store: str = "chroma"
++    top_k: int = Field(default=5, ge=1, le=50)
+     vectorstore_path: str = "./data/vectorstore"
+ 
+     oci_config_file: str = "~/.oci/config"
+@@ -29,15 +31,22 @@ class Settings(BaseSettings):
+ 
+     documents_path: str = "./data/documents"
+     generated_path: str = "./data/generated"
++    max_upload_mb: int = Field(default=10, ge=1, le=50)
+ 
+     log_level: str = "INFO"
+ 
++    @field_validator("debug", mode="before")
++    @classmethod
++    def parse_debug(cls, value):
++        # Algunos entornos Windows definen DEBUG=release globalmente.
++        return False if isinstance(value, str) and value.lower() == "release" else value
++
+     model_config = SettingsConfigDict(
+-        env_file=".env",
++        env_file=str(ENV_FILE),
+         env_file_encoding="utf-8",
+         case_sensitive=False,
+         extra="ignore",
+     )
+ 
+     
+-settings = Settings()
+\ No newline at end of file
++settings = Settings()
+diff --git a/backend/core/exceptions.py b/backend/core/exceptions.py
+index dcc5e587cbd214ffc925edd40adfd30fbe83c174..7f42c16bb3a808e2dd058335d3627d393fa04af0 100644
+--- a/backend/core/exceptions.py
++++ b/backend/core/exceptions.py
+@@ -19,4 +19,11 @@ class EvaluationError(NuevamenteException):
+ 
+ 
+ class StorageError(NuevamenteException):
+-    pass
+\ No newline at end of file
++    pass
++
++
++class PipelineError(NuevamenteException):
++    def __init__(self, etapa: str, mensaje: str, status_code: int = 502):
++        super().__init__(mensaje)
++        self.etapa = etapa
++        self.status_code = status_code
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index e7ed1b459625db339230d688e423795dd929cd8c..df25e2b2a452803d2e869bd3f9caa1c07bef4b43 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -3,5 +3,9 @@ pydantic
+ pydantic-settings
+ python-dotenv
+ uvicorn
++python-multipart
++python-docx
++python-pptx
++-r ../ingesta-rag/requirements.txt
+ 
+ 
+diff --git a/backend/schemas/request.py b/backend/schemas/request.py
+index 90df30e22bb6435b58be7f78891819f6d4070531..ccbef1219be28791e813f6e1e040f3a80ad5fee0 100644
+--- a/backend/schemas/request.py
++++ b/backend/schemas/request.py
+@@ -1,7 +1,8 @@
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, Field, ConfigDict
+ 
+ 
+ class AdaptacionRequest(BaseModel):
++    model_config = ConfigDict(str_strip_whitespace=True)
+     documento_titulo: str = Field(min_length=1)
+     documento_contenido: str = Field(min_length=1)
+     perfil_destinatario: str = Field(min_length=1)
+diff --git a/backend/services/adaptation_service.py b/backend/services/adaptation_service.py
+index 754f8afb32b17ee9f96ccfff6e8a8027d7f39008..63b584088c07420f1888fe3a88abffbcfec4d550 100644
+--- a/backend/services/adaptation_service.py
++++ b/backend/services/adaptation_service.py
+@@ -1,74 +1,106 @@
+-from schemas.request import AdaptacionRequest
+-from shared.contratos import RespuestaFinal
++"""Coordina exclusivamente implementaciones reales del flujo de adaptación."""
++import logging
++from pathlib import Path
++from threading import Lock
++from pydantic import ValidationError
+ 
++from backend.core.config import settings
++from backend.core.exceptions import PipelineError
++from backend.schemas.request import AdaptacionRequest
++from backend.services.extraction_service import SUPPORTED_EXTENSIONS, extraer_texto
++from backend.services.storage_service import StorageService
++from backend.services.rag_service import RagService
++from backend.services.orchestration_service import OrchestrationService
++from backend.services.evaluation_service import EvaluationService
++from shared.contratos import AlmacenamientoLocal, RespuestaFinal
+ 
+-from mocks.rag_mock import (
+-    indexar_documento,
+-    buscar_contexto,
+-)
++logger = logging.getLogger(__name__)
++_pipeline_lock = Lock()
++FORMATOS = {
++    "Flashcards de Memorización": "Flashcards",
++    "Quiz Interactivo con Justificaciones": "Quiz",
++    "Flashcards": "Flashcards", "Quiz": "Quiz",
++}
++ETIQUETAS = {"Flashcards": "Flashcards de Memorización", "Quiz": "Quiz Interactivo con Justificaciones"}
+ 
+-from mocks.orchestration_mock import (
+-    generar_contenido_adaptado,
+-)
+ 
+-from mocks.evaluation_mock import (
+-    evaluar_contenido,
+-)
+-
+-from mocks.storage_mock import (
+-    almacenar_contenido,
+-)
+-
+-
+-def adaptar_contenido(
+-    request: AdaptacionRequest,
+-) -> RespuestaFinal:
+-
+-    # 1. Indexar documento
+-    doc_id = indexar_documento(
+-        request.documento_titulo,
+-        request.documento_contenido,
+-    )
+-
+-    # 2. Buscar contexto
+-    contexto = buscar_contexto(
+-        doc_id=doc_id,
+-        query=request.documento_titulo,
+-    )
+-
+-    # 3. Generar contenido adaptado
+-    contenido = generar_contenido_adaptado(
+-        documento_titulo=request.documento_titulo,
+-        contexto=contexto,
+-        perfil_destinatario=request.perfil_destinatario,
+-        formato_salida=request.formato_salida,
+-        nicho_sector=request.nicho_sector,
+-        nivel_detalle=request.nivel_detalle,
+-    )
+-
+-    # 4. Evaluar
+-    evaluacion = evaluar_contenido(
+-        contenido=contenido,
+-        contexto=contexto,
+-    )
+-
+-    # 5. Almacenar
+-    almacenamiento = almacenar_contenido(
+-        contenido=contenido.model_dump(),
+-    )
+-
+-    # 6. Construir respuesta final
+-    return RespuestaFinal(
+-        status="exito",
+-        metadatos={
+-            "perfil_aplicado": request.perfil_destinatario,
+-            "formato_generado": request.formato_salida,
+-            "tiempo_estimado_estudio_minutos": (
+-                contenido.tiempo_estimado_estudio_minutos
++def adaptar_archivo(archivo, perfil_destinatario, formato_salida, nicho_sector, nivel_detalle):
++    nombre = (archivo.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
++    if Path(nombre).suffix.lower() not in SUPPORTED_EXTENSIONS:
++        raise PipelineError("validacion", "Formato admitido: PDF, DOCX, PPTX, TXT o MD.", 415)
++    formato = FORMATOS.get(formato_salida.strip())
++    if not formato:
++        raise PipelineError("validacion", "Selecciona Flashcards o Quiz.", 422)
++    if not all(value.strip() for value in (perfil_destinatario, nicho_sector, nivel_detalle)):
++        raise PipelineError("validacion", "Los parámetros no pueden estar vacíos.", 422)
++    limite = settings.max_upload_mb * 1024 * 1024
++    datos = archivo.file.read(limite + 1)
++    if not datos or len(datos) > limite:
++        raise PipelineError("validacion", "El archivo está vacío o supera el tamaño permitido.", 413)
++    if not _pipeline_lock.acquire(blocking=False):
++        raise PipelineError("ocupado", "Hay otra adaptación en curso. Intenta de nuevo al terminar.", 429)
++    etapa = "almacenamiento_original"
++    try:
++        storage = StorageService()
++        identificador, original = storage.guardar_original(nombre, datos)
++        del datos
++        etapa = "extraccion"
++        texto = extraer_texto(original)
++        request = AdaptacionRequest(
++            documento_titulo=nombre, documento_contenido=texto,
++            perfil_destinatario=perfil_destinatario, formato_salida=formato,
++            nicho_sector=nicho_sector, nivel_detalle=nivel_detalle,
++        )
++        etapa = "indexacion"
++        rag = RagService()
++        doc_id = rag.indexar(request.documento_titulo, request.documento_contenido)
++        etapa = "recuperacion"
++        contexto = rag.buscar(doc_id, request.documento_titulo, top_k=settings.top_k)
++        if not contexto:
++            raise PipelineError(etapa, "ChromaDB no devolvió contexto para el documento.")
++        etapa = "generacion"
++        contenido = OrchestrationService().generar(
++            documento_titulo=request.documento_titulo, contexto=contexto,
++            perfil_destinatario=request.perfil_destinatario, formato_salida=formato,
++            nicho_sector=request.nicho_sector, nivel_detalle=request.nivel_detalle,
++        )
++        etapa = "evaluacion"
++        evaluacion = EvaluationService().evaluar(
++            contenido, contexto, request.perfil_destinatario, formato
++        )
++        if evaluacion.claridad_pedagogica == "No evaluada":
++            raise PipelineError(etapa, "Gemini no pudo completar la evaluación. "
++                                "Comprueba los modelos configurados y la cuota disponible.")
++        etapa = "almacenamiento_resultado"
++        destino = storage.ruta_resultado(identificador)
++        respuesta = RespuestaFinal(
++            status="exito",
++            metadatos={
++                "doc_id": doc_id, "perfil_aplicado": request.perfil_destinatario,
++                "formato_generado": ETIQUETAS[formato],
++                "tiempo_estimado_estudio_minutos": contenido.tiempo_estimado_estudio_minutos,
++                "conceptos_clave": contenido.conceptos_clave,
++                "caracteres_extraidos": len(texto), "fragmentos_recuperados": len(contexto),
++            },
++            contenido_adaptado=contenido, evaluacion_calidad=evaluacion,
++            almacenamiento_local=AlmacenamientoLocal(
++                documento_original=str(original), resultado_generado=str(destino),
++                status_guardado="guardado",
+             ),
+-            "conceptos_clave": contenido.conceptos_clave,
+-        },
+-        contenido_adaptado=contenido,
+-        evaluacion_calidad=evaluacion,
+-        almacenamiento_oci=almacenamiento,
+-    )
+\ No newline at end of file
++        )
++        storage.guardar_resultado(destino, respuesta)
++        logger.info("Adaptación completada: doc_id=%s", doc_id)
++        return respuesta
++    except PipelineError:
++        raise
++    except ValidationError as error:
++        raise PipelineError(etapa, "Los datos no cumplen el contrato de adaptación.",
++                            422 if etapa == "extraccion" else 502) from error
++    except Exception as error:
++        # Los mensajes externos pueden incluir credenciales: no devolverlos ni registrarlos.
++        logger.error("Fallo en etapa %s (%s)", etapa, type(error).__name__)
++        mensaje = ("No se pudo completar esta etapa. Revisa la configuración y las dependencias. "
++                   "Para Gemini, verifica el acceso al modelo y la cuota disponible.")
++        raise PipelineError(etapa, mensaje, 500 if etapa.startswith("almacenamiento") else 502) from error
++    finally:
++        _pipeline_lock.release()
+diff --git a/backend/services/evaluation_service.py b/backend/services/evaluation_service.py
+index 768903e1885b0dfb5df28575bae1152d92ef518f..df1e974c76a6d36221ba73a0f80a6100073a6e99 100644
+--- a/backend/services/evaluation_service.py
++++ b/backend/services/evaluation_service.py
+@@ -1,4 +1,7 @@
+-class EvaluationService:
++from evaluacion.services.evaluador import evaluar_contenido
++
+ 
+-    def evaluar(self, contenido, contexto):
+-        ...
+\ No newline at end of file
++class EvaluationService:
++    def evaluar(self, contenido, contexto, perfil_destinatario, formato_salida):
++        return evaluar_contenido(contenido_generado=contenido, contexto=contexto,
++                                 perfil_destinatario=perfil_destinatario, formato_salida=formato_salida)
+diff --git a/backend/services/orchestration_service.py b/backend/services/orchestration_service.py
+index 8c911fabbf21a1b3c7ceb26829d7dc06d19714ed..d697fdf11d5770b0aa5175f1ef94e2a286cd147b 100644
+--- a/backend/services/orchestration_service.py
++++ b/backend/services/orchestration_service.py
+@@ -1,12 +1,6 @@
+-class OrchestrationService:
++from shared.module_loader import load_module
++
+ 
+-    def generar(
+-        self,
+-        documento_titulo,
+-        contexto,
+-        perfil_destinatario,
+-        formato_salida,
+-        nicho_sector,
+-        nivel_detalle
+-    ):
+-        ...
+\ No newline at end of file
++class OrchestrationService:
++    def generar(self, **parametros):
++        return load_module("orquestacion_agentes", "main").generar_contenido_adaptado(**parametros)
+diff --git a/backend/services/rag_service.py b/backend/services/rag_service.py
+index e83dfa7b797c18c72e4631cd4b930e323ba153fd..615926ef39e93b54a01ba90c71bd1d13bbace550 100644
+--- a/backend/services/rag_service.py
++++ b/backend/services/rag_service.py
+@@ -1,7 +1,9 @@
+-class RagService:
++from shared.module_loader import load_module
++
+ 
++class RagService:
+     def indexar(self, titulo: str, contenido: str) -> str:
+-        ...
++        return load_module("ingesta_rag", "services.ingestion").indexar_documento(titulo, contenido)
+ 
+     def buscar(self, doc_id: str, query: str, top_k: int = 5):
+-        ...
+\ No newline at end of file
++        return load_module("ingesta_rag", "services.retrieving_service").buscar_contexto(doc_id, query, top_k)
+diff --git a/backend/services/storage_service.py b/backend/services/storage_service.py
+index 22f026f780d0247959d445b28c6d0931460373e8..63fc03f1675f6c4551e400ecceb0b92b1c701f1d 100644
+--- a/backend/services/storage_service.py
++++ b/backend/services/storage_service.py
+@@ -1,4 +1,34 @@
++"""Persiste el original intacto y la respuesta completa en disco local."""
++import json
++import re
++from pathlib import Path
++from uuid import uuid4
++from backend.core.config import settings
++from shared.config import project_path
++
++
+ class StorageService:
++    def guardar_original(self, nombre: str, datos: bytes) -> tuple[str, Path]:
++        identificador = uuid4().hex
++        nombre = nombre.replace("\\", "/").rsplit("/", 1)[-1]
++        nombre = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", nombre).strip(" .")
++        # El prefijo evita también nombres reservados de Windows como CON.docx.
++        destino = project_path(settings.documents_path) / f"{identificador}_{nombre}"
++        destino.parent.mkdir(parents=True, exist_ok=True)
++        with destino.open("xb") as archivo:
++            archivo.write(datos)
++        return identificador, destino
++
++    def ruta_resultado(self, identificador: str) -> Path:
++        return project_path(settings.generated_path) / f"{identificador}.json"
+ 
+-    def guardar(self, documento, contenido):
+-        ...
+\ No newline at end of file
++    def guardar_resultado(self, destino: Path, respuesta) -> None:
++        destino.parent.mkdir(parents=True, exist_ok=True)
++        temporal = destino.with_suffix(".json.tmp")
++        try:
++            with temporal.open("x", encoding="utf-8") as archivo:
++                json.dump(respuesta.model_dump(mode="json", exclude_none=True), archivo,
++                          ensure_ascii=False, indent=2)
++            temporal.replace(destino)
++        finally:
++            temporal.unlink(missing_ok=True)
+diff --git a/evaluacion/services/evaluador.py b/evaluacion/services/evaluador.py
+index 3c2958b414cb7094dea3dd405abc969c1fe72c1c..ae44124fd4447743c55cbb40937344b0fc898127 100644
+--- a/evaluacion/services/evaluador.py
++++ b/evaluacion/services/evaluador.py
+@@ -20,6 +20,8 @@ from pathlib import Path
+ # sin importar desde qué carpeta se ejecute.
+ sys.path.append(str(Path(__file__).resolve().parents[2]))
+ 
++from shared.config import ENV_FILE
++from shared.gemini_transport import gemini_client_args
+ from dotenv import load_dotenv
+ from langchain_google_genai import ChatGoogleGenerativeAI
+ 
+@@ -27,7 +29,7 @@ from evaluacion.prompts.juez import PROMPT_JUEZ
+ from evaluacion.schemas.juez import ResultadoJuez, VeredictoItem
+ from shared.contratos import ChunkResultado, ContenidoGenerado, EvaluacionCalidad
+ 
+-load_dotenv()
++load_dotenv(ENV_FILE, override=False)
+ logger = logging.getLogger(__name__)
+ 
+ MODELO_POR_DEFECTO = "gemini-3.6-flash"
+@@ -69,6 +71,7 @@ def _get_llm(modelo: str, api_key: str) -> ChatGoogleGenerativeAI:
+         model=modelo,
+         google_api_key=api_key,
+         max_retries=1,
++        client_args=gemini_client_args(),
+     )
+ 
+ 
+@@ -84,6 +87,11 @@ def _es_error_de_cuota(error: Exception) -> bool:
+     return "RESOURCE_EXHAUSTED" in texto or "RATELIMIT" in texto or "429" in texto
+ 
+ 
++def _es_error_de_clave(error: Exception) -> bool:
++    texto = str(error).upper()
++    return any(code in texto for code in ("API_KEY_INVALID", "API_KEY_EXPIRED", "UNAUTHENTICATED"))
++
++
+ def _invocar_con_rotacion(prompt: str) -> ResultadoJuez:
+     """Llama al juez rotando keys ante errores de cupo y modelos ante saturación."""
+     global _clave_actual
+@@ -101,11 +109,11 @@ def _invocar_con_rotacion(prompt: str) -> ResultadoJuez:
+                 resultado = juez.invoke(prompt)
+             except Exception as error:
+                 if _es_error_de_sobrecarga(error):
+-                    logger.warning("El modelo %s está saturado, se prueba el siguiente: %s", modelo, error)
++                    logger.warning("El modelo %s está saturado, se prueba el siguiente", modelo)
+                     ultimo_error = error
+                     break  # con el modelo saturado otra key no ayuda: siguiente modelo
+-                if _es_error_de_cuota(error):
+-                    logger.warning("La API key %d no tiene cupo, se prueba la siguiente: %s", indice + 1, error)
++                if _es_error_de_cuota(error) or _es_error_de_clave(error):
++                    logger.warning("La credencial %d no es utilizable, se prueba la siguiente", indice + 1)
+                     ultimo_error = error
+                     continue
+                 raise
+@@ -187,7 +195,7 @@ def evaluar_contenido(
+     try:
+         resultado = _invocar_con_rotacion(prompt)
+     except ErrorEvaluacion as error:
+-        logger.warning("No se pudo evaluar el contenido con Gemini: %s", error)
++        logger.warning("No se pudo evaluar el contenido con Gemini (%s)", type(error).__name__)
+         return _evaluacion_no_disponible(str(error))
+     except Exception as error:
+         logger.warning("No se pudo evaluar el contenido con Gemini: %s", error)
+@@ -203,4 +211,4 @@ def evaluar_contenido(
+         anclaje_fuente_score=score,
+         claridad_pedagogica=resultado.claridad_pedagogica,
+         observaciones=observaciones,
+-    )
+\ No newline at end of file
++    )
+diff --git a/evaluacion/tests/test_evaluador.py b/evaluacion/tests/test_evaluador.py
+index af62315e0b9df798fee681593c31009383f5b287..0d1fc40789e1f535d80cef2b5cbeed1d4f6c1207 100644
+--- a/evaluacion/tests/test_evaluador.py
++++ b/evaluacion/tests/test_evaluador.py
+@@ -164,6 +164,14 @@ def test_evaluar_contenido_devuelve_evaluacion_por_defecto_si_falla_el_llm(monke
+     assert "RuntimeError" in r.observaciones
+ 
+ 
++def test_clave_invalida_no_impide_evaluar_con_otra(monkeypatch):
++    invalida = JuezFalso(error=RuntimeError("400 API_KEY_INVALID"))
++    valida = JuezFalso(resultado=_un_item_respaldado())
++    _usar_jueces(monkeypatch, {"invalida": invalida, "valida": valida})
++    assert _evaluar().claridad_pedagogica != "No evaluada"
++    assert invalida.llamadas == valida.llamadas == 1
++
++
+ def test_sin_api_key_devuelve_evaluacion_por_defecto(monkeypatch):
+     monkeypatch.setattr(evaluador, "_obtener_api_keys", lambda: [])
+ 
+@@ -279,4 +287,4 @@ def test_obtener_modelos_agrega_el_respaldo_y_no_repite(monkeypatch):
+     assert evaluador._obtener_modelos() == ["a", "b"]
+ 
+     monkeypatch.setenv("GEMINI_MODEL_RESPALDO", "a")
+-    assert evaluador._obtener_modelos() == ["a"]
+\ No newline at end of file
++    assert evaluador._obtener_modelos() == ["a"]
+diff --git a/ingesta-rag/models/vector_db.py b/ingesta-rag/models/vector_db.py
+index 822ae76212b9d33814806773e60694793b77788b..ac4d15cd8a8b20f1eeab6a724f38cf7442d2934c 100644
+--- a/ingesta-rag/models/vector_db.py
++++ b/ingesta-rag/models/vector_db.py
+@@ -9,8 +9,8 @@ from typing import List
+ from langchain_chroma import Chroma
+ from langchain_core.embeddings import Embeddings
+ 
+-from contratos import ChunkResultado
+-from utils.config import CHROMA_PERSIST_DIR, NOMBRE_COLECCION
++from shared.contratos import ChunkResultado
++from ..utils.config import CHROMA_PERSIST_DIR, NOMBRE_COLECCION
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -52,8 +52,8 @@ def indexar_en_chroma(chunks: List[str], documento_titulo: str, embedding_functi
+         logger.info(f"Documento '{documento_titulo}' indexado exitosamente con doc_id: {doc_id}")
+         return doc_id
+     except Exception as e:
+-        logger.error(f"Error al indexar en ChromaDB: {str(e)}")
+-        raise RuntimeError(f"Fallo en la persistencia vectorial: {str(e)}")
++        logger.error("Error al indexar en ChromaDB (%s)", type(e).__name__)
++        raise RuntimeError("Fallo en la persistencia vectorial.") from e
+ 
+ 
+ def buscar_en_chroma(doc_id: str, query: str, embedding_function: Embeddings, top_k: int = 5) -> List[ChunkResultado]:
+@@ -77,5 +77,5 @@ def buscar_en_chroma(doc_id: str, query: str, embedding_function: Embeddings, to
+             )
+         return resultados_formateados
+     except Exception as e:
+-        logger.error(f"Error al buscar en ChromaDB para doc_id {doc_id}: {str(e)}")
+-        raise RuntimeError(f"Fallo en la búsqueda de contexto: {str(e)}")
+\ No newline at end of file
++        logger.error("Error al buscar en ChromaDB para %s (%s)", doc_id, type(e).__name__)
++        raise RuntimeError("Fallo en la búsqueda de contexto.") from e
+diff --git a/ingesta-rag/services/chunker.py b/ingesta-rag/services/chunker.py
+index aa6b2e9c0ce1e299b9df37f489a57a53d3565576..fc2029586696ea1ae911e13bd95c6c91ec0ef667 100644
+--- a/ingesta-rag/services/chunker.py
++++ b/ingesta-rag/services/chunker.py
+@@ -6,7 +6,7 @@ Implementa la lógica pura de segmentación por párrafos y frases respetando so
+ import re
+ import logging
+ # Usaremos variables de ambiente para CHUNK_SIZE, CHUNK_OVERLAP
+-from utils.config import CHUNK_SIZE, CHUNK_OVERLAP
++from ..utils.config import CHUNK_SIZE, CHUNK_OVERLAP
+ 
+ logger = logging.getLogger(__name__)
+ 
+diff --git a/ingesta-rag/services/embedding_service.py b/ingesta-rag/services/embedding_service.py
+index 8921dded9057c665f910c2c7d2e48a818b0c27dd..11a349a360ccc6fcbb47b4751417779846d01c63 100644
+--- a/ingesta-rag/services/embedding_service.py
++++ b/ingesta-rag/services/embedding_service.py
+@@ -12,8 +12,9 @@ from typing import List
+ from langchain_core.embeddings import Embeddings
+ from langchain_google_genai import GoogleGenerativeAIEmbeddings
+ 
+-from utils.key_manager import KeyManager
+-from utils.config import MODELO_EMBEDDINGS
++from ..utils.key_manager import KeyManager
++from ..utils.config import MODELO_EMBEDDINGS, MAX_EMBEDDING_ATTEMPTS
++from shared.gemini_transport import gemini_client_args
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -40,7 +41,8 @@ class GeminiEmbeddingsResiliente(Embeddings):
+ 
+         return GoogleGenerativeAIEmbeddings(
+             model=nombre_limpio,
+-            google_api_key=api_key_activa
++            google_api_key=api_key_activa,
++            client_args=gemini_client_args(),
+         )
+ 
+     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+@@ -69,12 +71,14 @@ class GeminiEmbeddingsResiliente(Embeddings):
+ 
+             fallos_consecutivos_429 = 0
+             lote_completado = False
++            intentos_lote = 0
+ 
+             while not lote_completado:
++                intentos_lote += 1
+                 api_key_activa = self.key_manager.obtener_key_activa()
+                 print(
+                     f"   [DEBUG-EMBEDDINGS] Procesando lote {num_lote}/{total_lotes} "
+-                    f"({len(batch)} chunks) con Key: ...{api_key_activa[-4:]} "
++                    f"({len(batch)} chunks) "
+                     f"[Lote {lotes_consecutivos_key + 1}/{MAX_LOTES_POR_KEY} para esta Key]"
+                 )
+                 instancia = self._obtener_instancia_embeddings()
+@@ -94,7 +98,7 @@ class GeminiEmbeddingsResiliente(Embeddings):
+                     # Si la key actual ya procesó 2 lotes, rotamos a la siguiente preventivamente
+                     if lotes_consecutivos_key >= MAX_LOTES_POR_KEY:
+                         print(
+-                            f"   [DEBUG-EMBEDDINGS] 🔄 Key ...{api_key_activa[-4:]} alcanzó el límite de "
++                            f"   [DEBUG-EMBEDDINGS] 🔄 Key [activa] alcanzó el límite de "
+                             f"{MAX_LOTES_POR_KEY} lotes seguidos. Rotando preventivamente a la siguiente Key..."
+                         )
+                         self.key_manager.rotar_a_siguiente_valida()
+@@ -109,13 +113,16 @@ class GeminiEmbeddingsResiliente(Embeddings):
+                     )
+ 
+                     if not es_cuota:
+-                        logger.error(f"Error crítico no relacionado con cuotas en lote {num_lote}: {mensaje}")
+-                        raise RuntimeError(f"Error fatal al generar embeddings en lote {num_lote}: {mensaje}") from e
++                        logger.error("Error de embeddings en lote %s (%s)", num_lote, type(e).__name__)
++                        raise RuntimeError("Falló la API de embeddings.") from e
++
++                    if intentos_lote >= MAX_EMBEDDING_ATTEMPTS:
++                        raise RuntimeError("Se agotaron los intentos de embeddings por cuota.") from e
+ 
+                     fallos_consecutivos_429 += 1
+                     lotes_consecutivos_key = 0  # Si falla, reiniciamos el conteo de la key
+                     print(
+-                        f"   [DEBUG-EMBEDDINGS] ⚠️ Cuota/RPM alcanzada en Key ...{api_key_activa[-4:]} "
++                        f"   [DEBUG-EMBEDDINGS] ⚠️ Cuota/RPM alcanzada en Key [activa] "
+                         f"(Fallo consecutivo {fallos_consecutivos_429})."
+                     )
+ 
+@@ -161,8 +168,8 @@ class GeminiEmbeddingsResiliente(Embeddings):
+                 print(f"   [DEBUG-EMBEDDINGS] ✅ Vector de consulta generado con dimensión: {len(vector)}")
+                 return vector
+             except Exception as e:
+-                print(f"   [DEBUG-EMBEDDINGS] ❌ Error en intento {intento+1}: {str(e)}")
+-                logger.error(f"Error al generar embedding de la consulta (intento {intento+1}): {str(e)}")
+-                self.key_manager.marcar_key_invalida(key_actual, razon=str(e))
++                print(f"   [DEBUG-EMBEDDINGS] ❌ Error en intento {intento+1}: {type(e).__name__}")
++                logger.error("Error de consulta en intento %s (%s)", intento + 1, type(e).__name__)
++                self.key_manager.marcar_key_invalida(key_actual, razon=type(e).__name__)
+ 
+-        raise RuntimeError("Todas las API Keys de Gemini fallaron durante el embedding de la consulta.")
+\ No newline at end of file
++        raise RuntimeError("Todas las API Keys de Gemini fallaron durante el embedding de la consulta.")
+diff --git a/ingesta-rag/services/indexing_service.py b/ingesta-rag/services/indexing_service.py
+index 3b456040c2ae45d870178e47a8331563604ed587..0b6a38d9349c47c06a2168b2659ea4b63e5fff87 100644
+--- a/ingesta-rag/services/indexing_service.py
++++ b/ingesta-rag/services/indexing_service.py
+@@ -4,11 +4,11 @@ Descripción: Expone la función principal 'indexar_documento' requerida en cont
+ """
+ 
+ import logging
+-from services.chunker import dividir_texto
+-from services.embedding_service import GeminiEmbeddingsResiliente
+-from models.vector_db import indexar_en_chroma
+-from utils.key_manager import KeyManager
+-from utils.config import GEMINI_API_KEYS, CHUNK_SIZE, CHUNK_OVERLAP
++from .chunker import dividir_texto
++from .embedding_service import GeminiEmbeddingsResiliente
++from ..models.vector_db import indexar_en_chroma
++from ..utils.key_manager import KeyManager
++from ..utils.config import GEMINI_API_KEYS, CHUNK_SIZE, CHUNK_OVERLAP
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -77,4 +77,4 @@ def indexar_documento(documento_titulo: str, documento_contenido: str) -> str:
+     )
+ 
+     print(f"[DEBUG-INDEXING] 🎯 Proceso completado exitosamente. doc_id asignado: {doc_id}\n")
+-    return doc_id
+\ No newline at end of file
++    return doc_id
+diff --git a/ingesta-rag/services/ingestion.py b/ingesta-rag/services/ingestion.py
+index 10cfe20a54adef114cc1788d54b18766f47f5d91..6ac6537c6884e4b087cf79d392a348805741ca70 100644
+--- a/ingesta-rag/services/ingestion.py
++++ b/ingesta-rag/services/ingestion.py
+@@ -9,11 +9,10 @@ import logging
+ 
+ # Importamos las estructuras de datos definidas en el contrato unificado
+ # (Asumiendo que el archivo de contratos se llama contratos.py)
+-from contratos import ChunkResultado
++from shared.contratos import ChunkResultado
+ 
+ # Importamos los servicios internos que ya construimos
+-from services.indexing_service import indexar_documento as _indexar_impl
+-from services.embedding_service import GeminiEmbeddingsResiliente
++from .indexing_service import indexar_documento as _indexar_impl
+ 
+ logger = logging.getLogger(__name__)
+ 
+diff --git a/ingesta-rag/services/retrieving_service.py b/ingesta-rag/services/retrieving_service.py
+index 8c4c42ecff9c3a05b6c9235acee1515fcafbdc29..8bc0b6b2ae121a9fbc994eaca60a739d8c8d546c 100644
+--- a/ingesta-rag/services/retrieving_service.py
++++ b/ingesta-rag/services/retrieving_service.py
+@@ -6,11 +6,11 @@ Expone una interfaz simple para backend/orquestación.
+ 
+ from typing import List
+ 
+-from models.vector_db import buscar_en_chroma
+-from contratos import ChunkResultado    # Importación de los Contratos
+-from services.embedding_service import GeminiEmbeddingsResiliente
+-from utils.key_manager import KeyManager
+-from utils.config import GEMINI_API_KEYS
++from ..models.vector_db import buscar_en_chroma
++from shared.contratos import ChunkResultado
++from .embedding_service import GeminiEmbeddingsResiliente
++from ..utils.key_manager import KeyManager
++from ..utils.config import GEMINI_API_KEYS
+ 
+ 
+ # Servicio compartido de embeddings
+@@ -68,8 +68,6 @@ def buscar_contexto(
+     for i, chunk in enumerate(resultados, 1):
+         score_val = getattr(chunk, 'score', 0.0)
+         fuente_val = getattr(chunk, 'fuente', 'N/A')
+-        texto_val = getattr(chunk, 'texto', '')
+         print(f" [{i}] Score: {score_val:.4f} | Fuente: {fuente_val}")
+-        print(f" Texto: {texto_val[:120]}...\n")
+ 
+-    return resultados
+\ No newline at end of file
++    return resultados
+diff --git a/ingesta-rag/utils/config.py b/ingesta-rag/utils/config.py
+index 02026b6c0539f36ab07b7e0cb81e918b76f3e1b8..819189e75f3aa5522547ac807c252bcc3d0c7915 100644
+--- a/ingesta-rag/utils/config.py
++++ b/ingesta-rag/utils/config.py
+@@ -1,7 +1,5 @@
+ import os
+-from dotenv import load_dotenv
+-
+-load_dotenv()
++from shared.config import project_path
+ 
+ # ==========================================
+ # 1. GEMINI - API KEYS
+@@ -33,6 +31,7 @@ MODELO_EMBEDDINGS = os.getenv(
+ # 3. CHUNKING
+ # ==========================================
+ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
++MAX_EMBEDDING_ATTEMPTS = max(1, int(os.getenv("MAX_EMBEDDING_ATTEMPTS", "4")))
+ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
+ 
+ if CHUNK_SIZE <= 0:
+@@ -48,12 +47,12 @@ if CHUNK_OVERLAP < 0 or CHUNK_OVERLAP >= CHUNK_SIZE:
+ # ==========================================
+ # 4. CHROMADB
+ # ==========================================
+-CHROMA_PERSIST_DIR = os.getenv(
++CHROMA_PERSIST_DIR = str(project_path(os.getenv(
+     "CHROMA_PERSIST_DIR",
+     "./chroma_db"
+-)
++)))
+ 
+ NOMBRE_COLECCION = os.getenv(
+     "NOMBRE_COLECCION",
+     "nuevamente_documentos"
+-)
+\ No newline at end of file
++)
+diff --git a/ingesta-rag/utils/key_manager.py b/ingesta-rag/utils/key_manager.py
+index 2f5b22b43f717314f0029e580938079e6dd0e8c9..857d18cedc1d8c861f666ec95c1013e6a1a0d086 100644
+--- a/ingesta-rag/utils/key_manager.py
++++ b/ingesta-rag/utils/key_manager.py
+@@ -55,6 +55,6 @@ class KeyManager:
+         Marca una API Key como no disponible temporalmente y conmuta
+         a la siguiente disponible.
+         """
+-        logger.warning(f"Marcando API Key (...{key[-4:] if len(key) >= 4 else key}) como inválida. Razón: {razon}")
++        logger.warning(f"Marcando API Key [activa] como inválida. Razón: {razon}")
+         self._keys_invalidas.add(key)
+         return self._rotar_siguiente()
+\ No newline at end of file
+diff --git a/interfaz/app.py b/interfaz/app.py
+index 5a82b42d5c0465dbdf34786c3f7a82a7122ef100..2b1ad92e11c693f4c20c879be75de9ec0c1fa936 100644
+--- a/interfaz/app.py
++++ b/interfaz/app.py
+@@ -15,7 +15,6 @@ import streamlit as st
+ 
+ from pages import seccion1_carga, seccion2_parametros, seccion3_resultados
+ from theme import inject_custom_css
+-import  assets
+ 
+ st.set_page_config(page_title="NuevaMente", page_icon="🎓", layout="centered")
+ inject_custom_css()
+@@ -72,19 +71,10 @@ st.divider()
+ paso = st.session_state["paso_actual"]
+ 
+ if paso == 1:
+-    try:
+-        seccion1_carga.render()
+-    except (AttributeError, TypeError):
+-        st.info("La vista 'Carga de Datos' aún está en desarrollo por el equipo.")
++    seccion1_carga.render()
+ 
+ elif paso == 2:
+-    try:
+-        seccion2_parametros.render()
+-    except (AttributeError, TypeError):
+-        st.info("La vista 'Parámetros' aún está en desarrollo por el equipo.")
++    seccion2_parametros.render()
+ 
+ elif paso == 3:
+-    try:
+-        seccion3_resultados.render()
+-    except (AttributeError, TypeError):
+-        st.info("La vista 'Resultados' aún está en desarrollo por el equipo.")
+\ No newline at end of file
++    seccion3_resultados.render()
+diff --git a/interfaz/pages/seccion1_carga.py b/interfaz/pages/seccion1_carga.py
+index 3a9b5a7bd6659537685b6451bdef1ed20ed8c7a2..eedf45f255b0f617e3b584bb69e71f299b6ebfe6 100644
+--- a/interfaz/pages/seccion1_carga.py
++++ b/interfaz/pages/seccion1_carga.py
+@@ -16,16 +16,11 @@ def procesar_y_continuar():
+         archivo = st.session_state['archivo_temporal']
+         contenido_bytes = archivo.getvalue()
+ 
+-        # Extracción del contenido previamente subido
+-        try:
+-            texto_extraido = contenido_bytes.decode("utf-8")
+-        except Exception:
+-            texto_extraido = f"Documento binario subido({archivo.name})"
+-
+-        # Guarda datos en session_state para Backend
++        # El backend extrae el texto; el frontend conserva los bytes originales.
+         st.session_state['documento_titulo'] = archivo.name
+-        st.session_state['documento_contenido'] = texto_extraido
+         st.session_state['archivo_bytes'] = contenido_bytes
++        st.session_state['resultado'] = None
++        st.session_state.pop('error_generacion', None)
+         
+         # Avanza a la pantalla 2
+         st.session_state['paso_actual'] = 2
+@@ -99,4 +94,4 @@ def render():
+ 
+ # Para asegurar la renderización local
+ if __name__ == "__main__":
+-    render()
+\ No newline at end of file
++    render()
+diff --git a/interfaz/pages/seccion2_parametros.py b/interfaz/pages/seccion2_parametros.py
+index 7b8a112293d26dad67500923680e24a5da1182f3..a9790428cb7949f19d1832720fdb4a24fcda89ca 100644
+--- a/interfaz/pages/seccion2_parametros.py
++++ b/interfaz/pages/seccion2_parametros.py
+@@ -1,7 +1,7 @@
+ import sys
+ from pathlib import Path
+ import streamlit as st
+-import json
++import requests
+ 
+ RAIZ_DIR = Path(__file__).resolve().parent.parent
+ if str(RAIZ_DIR) not in sys.path:
+@@ -9,6 +9,7 @@ if str(RAIZ_DIR) not in sys.path:
+ 
+ from theme import PALETTE
+ from constants import PERFILES, FORMATOS, NIVELES
++from client_config import ADAPT_URL, API_TIMEOUT_SECONDS
+ 
+ # Fallback si constants no tiene alguna lista
+ if not PERFILES:
+@@ -31,119 +32,59 @@ def volver_al_paso_1():
+     st.session_state["paso_actual"] = 1
+ 
+ 
+-def _crear_resultado_simulado(solicitud: dict) -> dict:
+-    """Genera datos de prueba acordes a lo que espera la Pantalla 3."""
+-    titulo_doc = solicitud.get("documento_titulo") or "Documento Técnico"
+-    formato = solicitud.get("formato_salida")
+-    perfil = solicitud.get("perfil_destinatario")
+-    nicho = solicitud.get("nicho_sector") or "General"
+-
+-    if formato == "Flashcards de Memorización":
+-        items = [
+-            {
+-                "frente": "¿Cuál es el concepto central abordado en el material?",
+-                "dorso": f"El procesamiento estructurado y adaptación de contenidos en el sector {nicho}.",
+-                "pista_didactica": "Revisa los objetivos principales del documento."
+-            },
+-            {
+-                "frente": "¿Cómo influye el perfil del destinatario en la adaptación?",
+-                "dorso": f"Permite modular la complejidad técnica hacia un enfoque para {perfil}.",
+-                "pista_didactica": "Piensa en el nivel de abstracción necesario."
+-            },
+-            {
+-                "frente": "¿Qué ventaja ofrece el formato Flashcards?",
+-                "dorso": "Facilita la retención espaciada y el repaso ágil de conceptos clave.",
+-                "pista_didactica": "Técnica de memorización activa."
+-            }
+-        ]
+-    else:  # Quiz Interactivo con Justificaciones
+-        items = [
+-            {
+-                "pregunta": f"Respecto a {titulo_doc}, ¿cuál es el objetivo primordial?",
+-                "opciones": [
+-                    "Adaptar material educativo a las necesidades del estudiante",
+-                    "Eliminar la necesidad de lectura técnica",
+-                    "Traducir código fuente sin análisis previo",
+-                    "Almacenar documentos sin procesar"
+-                ],
+-                "respuesta_correcta": "Adaptar material educativo a las necesidades del estudiante",
+-                "justificacion": f"El sistema busca optimizar la comprensión para {perfil}."
+-            },
+-            {
+-                "pregunta": "¿Por qué es importante medir el anclaje a la fuente?",
+-                "opciones": [
+-                    "Para asegurar que no existan alucinaciones y el contenido sea fiel",
+-                    "Para aumentar la longitud del texto resultante",
+-                    "Para formatear únicamente en HTML",
+-                    "Para omitir la etapa de evaluación"
+-                ],
+-                "respuesta_correcta": "Para asegurar que no existan alucinaciones y el contenido sea fiel",
+-                "justificacion": "El anclaje garantiza que la adaptación se base estrictamente en el documento original."
+-            }
+-        ]
+-
+-    return {
+-        "status": "exito",
+-        "metadatos": {
+-            "perfil_aplicado": perfil,
+-            "formato_generado": formato,
+-            "tiempo_estimado_estudio_minutos": 8,
+-            "conceptos_clave": ["Adaptación Didáctica", nicho, "Evaluación RAG"],
+-        },
+-        "contenido_adaptado": {
+-            "titulo": f"Sesión de Estudio: {titulo_doc}",
+-            "introduccion_contextualizada": (
+-                f"Material adaptado para el perfil '{perfil}' con enfoque en '{nicho}'."
+-            ),
+-            "items": items,
+-        },
+-        "evaluacion_calidad": {
+-            "anclaje_fuente_score": 0.95,
+-            "claridad_pedagogica": "Alta",
+-            "observaciones": "Generación adaptada correctamente al formato solicitado."
+-        },
+-        "almacenamiento_oci": {
+-            "bucket": "nuevamente-storage",
+-            "objeto_id": f"adaptaciones/{titulo_doc}.json",
+-            "status_upload": "completado"
+-        }
+-    }
+-
+-
+ def generar():
++    st.session_state["resultado"] = None
++    st.session_state.pop("error_generacion", None)
+     solicitud = {
+-        "documento_titulo": st.session_state.get("documento_titulo", "Documento"),
+-        "documento_contenido": st.session_state.get("documento_contenido", ""),
+         "perfil_destinatario": st.session_state.get("param_perfil", "General"),
+         "formato_salida": st.session_state.get("param_formato", FORMATOS_SELECCION[0]),
+         "nicho_sector": st.session_state.get("param_nicho", "").strip() or "General",
+         "nivel_detalle": st.session_state.get("param_nivel", "Intermedio"),
+     }
+     st.session_state["solicitud"] = solicitud
+-
+-    # 1. Intento de llamada al backend si requests está disponible y el servidor activo
+-    resultado = None
++    datos = st.session_state.get("archivo_bytes")
++    if not datos:
++        st.session_state["error_generacion"] = "Carga un documento antes de generar."
++        return
+     try:
+-        import requests
+-        resp = requests.post(
+-            "http://localhost:8000/api/v1/adapt",
+-            json=solicitud,
+-            timeout=5
++        with st.spinner("Procesando documento, recuperando contexto y consultando Gemini..."):
++            resp = requests.post(
++                ADAPT_URL, data=solicitud,
++                files={"archivo": (st.session_state["documento_titulo"], datos,
++                                    "application/octet-stream")},
++                timeout=(10, API_TIMEOUT_SECONDS),
++            )
++        if not resp.ok:
++            try:
++                detail = resp.json().get("detail", {})
++            except ValueError:
++                detail = {}
++            if isinstance(detail, dict):
++                mensaje = detail.get("mensaje", "La API rechazó la solicitud.")
++                etapa = detail.get("etapa", "validacion")
++                st.session_state["error_generacion"] = f"{etapa}: {mensaje} (HTTP {resp.status_code})"
++            else:
++                st.session_state["error_generacion"] = f"La API rechazó los datos (HTTP {resp.status_code})."
++            return
++        resultado = resp.json()
++        if not isinstance(resultado, dict) or resultado.get("status") != "exito":
++            raise ValueError("Respuesta inesperada de la API.")
++        st.session_state["resultado"] = resultado
++        st.session_state["paso_actual"] = 3
++    except requests.Timeout:
++        st.session_state["error_generacion"] = (
++            "La API superó el tiempo de espera. Puede seguir procesando el documento; "
++            "comprueba el backend antes de reintentar."
+         )
+-        if resp.status_code == 200:
+-            resultado = resp.json()
+-    except Exception:
+-        resultado = None
+-
+-    # 2. Si no hay backend levantado, usa el generador local de prueba
+-    if not resultado or resultado.get("status") != "exito":
+-        resultado = _crear_resultado_simulado(solicitud)
+-
+-    st.session_state["resultado"] = resultado
+-    st.session_state["paso_actual"] = 3
++    except requests.RequestException:
++        st.session_state["error_generacion"] = "No se pudo contactar al backend. Comprueba su dirección y disponibilidad."
++    except ValueError:
++        st.session_state["error_generacion"] = "El backend devolvió una respuesta inválida."
+ 
+ 
+ def render():
++    if st.session_state.get("error_generacion"):
++        st.error(st.session_state["error_generacion"])
+     col_izq, col_centro, col_der = st.columns([0.8, 3.4, 0.8])
+ 
+     with col_centro:
+diff --git a/interfaz/pages/seccion3_resultados.py b/interfaz/pages/seccion3_resultados.py
+index 7f3fa44718e0d7584ca1234ae566afe0626566f7..bbda95a2fb72bceaa8068578acedec44066d989a 100644
+--- a/interfaz/pages/seccion3_resultados.py
++++ b/interfaz/pages/seccion3_resultados.py
+@@ -24,6 +24,9 @@ def reiniciar_proceso():
+     st.session_state["solicitud"] = {}
+     st.session_state["quiz_respuestas"] = {}
+     st.session_state["flash_idx"] = 0
++    for key in list(st.session_state):
++        if key in {"archivo_bytes", "archivo_temporal", "documento_titulo", "documento_contenido", "error_generacion"} or key.startswith(("flash_reveal_", "quiz_")):
++            del st.session_state[key]
+     st.rerun()
+ 
+ 
+@@ -71,6 +74,7 @@ def render() -> None:
+             contenido = resultado.get("contenido_adaptado", {})
+             calidad = resultado.get("evaluacion_calidad", {})
+             oci = resultado.get("almacenamiento_oci", {})
++            local = resultado.get("almacenamiento_local", {})
+ 
+             titulo = contenido.get("titulo", "Resultado de estudio")
+             intro = contenido.get("introduccion_contextualizada", "")
+@@ -139,7 +143,16 @@ def render() -> None:
+ 
+             st.divider()
+ 
+-            # Pie técnico OCI
++            if calidad.get("observaciones"):
++                st.caption(calidad["observaciones"])
++            if local:
++                st.success("Documento original y resultado guardados localmente.")
++                with st.expander("Archivos guardados"):
++                    st.write("Original:", local.get("documento_original"))
++                    st.write("Resultado JSON:", local.get("resultado_generado"))
++                    st.write("Documento en ChromaDB:", meta.get("doc_id"))
++
++            # OCI solo se muestra si la API devuelve un almacenamiento OCI real.
+             if oci:
+                 st.markdown(
+                     f"""
+@@ -309,4 +322,4 @@ def _render_quiz(items: list) -> None:
+ 
+ 
+ if __name__ == "__main__":
+-    render()
+\ No newline at end of file
++    render()
+diff --git a/interfaz/requirements.txt b/interfaz/requirements.txt
+index 5df0f8ea13262122d7137d7777289f20a0b73c09..ed99a6887509e575d6820e3d0b35be53b350bd8d 100644
+--- a/interfaz/requirements.txt
++++ b/interfaz/requirements.txt
+@@ -1 +1,6 @@
+-streamlit>=1.38
+\ No newline at end of file
++# streamlit>=1.38
++
++# Para OCI:
++streamlit==1.66.0
++requests
++python-dotenv
+diff --git a/orquestacion-agentes/main.py b/orquestacion-agentes/main.py
+index 15274be8c591c357c36d834e234e1720655ec9c2..afafed94cdc816ae193077f93ab8394238f6d2f3 100644
+--- a/orquestacion-agentes/main.py
++++ b/orquestacion-agentes/main.py
+@@ -26,6 +26,8 @@ from pathlib import Path
+ # sin importar desde qué carpeta se ejecute este archivo.
+ sys.path.append(str(Path(__file__).resolve().parent.parent))
+ 
++from shared.config import ENV_FILE
++from shared.gemini_transport import gemini_client_args
+ from dotenv import load_dotenv
+ from langchain_google_genai import ChatGoogleGenerativeAI
+ 
+@@ -36,7 +38,7 @@ from shared.contratos import (
+     ContenidoQuiz,
+ )
+ 
+-load_dotenv()
++load_dotenv(ENV_FILE, override=False)
+ logger = logging.getLogger(__name__)
+ 
+ MODELO_POR_DEFECTO = "gemini-3.6-flash"
+@@ -130,6 +132,7 @@ def _get_llm(modelo: str, api_key: str) -> ChatGoogleGenerativeAI:
+         model=modelo,
+         google_api_key=api_key,
+         max_retries=1,
++        client_args=gemini_client_args(),
+     )
+ 
+ 
+@@ -145,6 +148,11 @@ def _es_error_de_cuota(error: Exception) -> bool:
+     return "RESOURCE_EXHAUSTED" in texto or "RATELIMIT" in texto or "429" in texto
+ 
+ 
++def _es_error_de_clave(error: Exception) -> bool:
++    texto = str(error).upper()
++    return any(code in texto for code in ("API_KEY_INVALID", "API_KEY_EXPIRED", "UNAUTHENTICATED"))
++
++
+ def _invocar_con_rotacion(modelo_formato, prompt: str):
+     """Llama a Gemini rotando keys ante errores de cupo y modelos ante saturación."""
+     global _clave_actual
+@@ -165,11 +173,11 @@ def _invocar_con_rotacion(modelo_formato, prompt: str):
+                 resultado = llm.invoke(prompt)
+             except Exception as error:
+                 if _es_error_de_sobrecarga(error):
+-                    logger.warning("El modelo %s está saturado, se prueba el siguiente: %s", modelo, error)
++                    logger.warning("El modelo %s está saturado, se prueba el siguiente", modelo)
+                     ultimo_error = error
+                     break  # con el modelo saturado otra key no ayuda: siguiente modelo
+-                if _es_error_de_cuota(error):
+-                    logger.warning("La API key %d no tiene cupo, se prueba la siguiente: %s", indice + 1, error)
++                if _es_error_de_cuota(error) or _es_error_de_clave(error):
++                    logger.warning("La credencial %d no es utilizable, se prueba la siguiente", indice + 1)
+                     ultimo_error = error
+                     continue
+                 raise
+@@ -255,7 +263,7 @@ def generar_contenido_adaptado(
+     except ErrorGeneracion:
+         raise
+     except Exception as error:
+-        logger.warning("Falló la generación con Gemini: %s", error)
++        logger.warning("Falló la generación con Gemini (%s)", type(error).__name__)
+         raise ErrorGeneracion(
+             f"No se pudo generar el contenido con Gemini ({type(error).__name__}). "
+             "Intentá de nuevo en unos minutos."
+@@ -298,4 +306,4 @@ if __name__ == "__main__":
+         )
+         print(resultado.model_dump_json(indent=2))
+     except ErrorOrquestacion as error:
+-        print(f"Error: {error}")
+\ No newline at end of file
++        print(f"Error: {error}")
+diff --git a/orquestacion-agentes/tests/test_validaciones.py b/orquestacion-agentes/tests/test_validaciones.py
+index c257bdd29d73ec93a2ccf33af73772cad4736e78..ea3649798bbcb3c30d24bd9045658ff665996dfa 100644
+--- a/orquestacion-agentes/tests/test_validaciones.py
++++ b/orquestacion-agentes/tests/test_validaciones.py
+@@ -224,6 +224,14 @@ def test_recuerda_la_ultima_key_que_funciono(monkeypatch):
+     assert con_cupo.llamadas == 2
+ 
+ 
++def test_clave_invalida_no_impide_usar_otra_configurada(monkeypatch):
++    invalida = LlmFalso(error=RuntimeError("400 API_KEY_INVALID"))
++    valida = LlmFalso(resultado=_quiz())
++    _usar_llms(monkeypatch, {"invalida": invalida, "valida": valida})
++    assert _generar().titulo == "Titulo"
++    assert invalida.llamadas == valida.llamadas == 1
++
++
+ def test_si_todas_las_keys_estan_agotadas_lanza_error_generacion(monkeypatch):
+     _usar_llms(
+         monkeypatch,
+@@ -299,4 +307,4 @@ def test_obtener_modelos_agrega_el_respaldo_y_no_repite(monkeypatch):
+     assert orq._obtener_modelos() == ["a", "b"]
+ 
+     monkeypatch.setenv("GEMINI_MODEL_RESPALDO", "a")
+-    assert orq._obtener_modelos() == ["a"]
+\ No newline at end of file
++    assert orq._obtener_modelos() == ["a"]
+diff --git a/shared/contratos.py b/shared/contratos.py
+index 8f996ed6d2f06139b0c32a1a0c68101dc48bb2dc..7d6e97155a2f89f67a9f45516019a71a2fc0c587 100644
+--- a/shared/contratos.py
++++ b/shared/contratos.py
+@@ -112,9 +112,16 @@ class AlmacenamientoOCI(BaseModel):
+     status_upload: str
+ 
+ 
++class AlmacenamientoLocal(BaseModel):
++    documento_original: str
++    resultado_generado: str
++    status_guardado: str
++
++
+ class RespuestaFinal(BaseModel):
+     status: str
+     metadatos: dict[str, Any]
+     contenido_adaptado: ContenidoGenerado
+     evaluacion_calidad: EvaluacionCalidad
+-    almacenamiento_oci: AlmacenamientoOCI
+\ No newline at end of file
++    almacenamiento_oci: AlmacenamientoOCI | None = None
++    almacenamiento_local: AlmacenamientoLocal | None = None
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000000000000000000000000000000000000..4df5f7bf1fcb1ebe98a9a8e9c8c547132ebfd2a0
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,18 @@
++# Copiar a .env en la raíz. No versionar credenciales reales.
++GEMINI_API_KEYS=
++GEMINI_MODEL=gemini-3.6-flash
++GEMINI_MODEL_RESPALDO=gemini-3.8-flash
++MODELO_EMBEDDINGS=gemini-embedding-001
++CHUNK_SIZE=1000
++CHUNK_OVERLAP=200
++CHROMA_PERSIST_DIR=./chroma_db
++NOMBRE_COLECCION=nuevamente_documentos
++MAX_EMBEDDING_ATTEMPTS=4
++DOCUMENTS_PATH=./data/documents
++GENERATED_PATH=./data/generated
++MAX_UPLOAD_MB=10
++TOP_K=5
++APP_DEBUG=false
++API_PREFIX=/api/v1
++BACKEND_URL=http://localhost:8000
++API_TIMEOUT_SECONDS=300
+diff --git a/backend/requirements-dev.txt b/backend/requirements-dev.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..7af6bb0b70d64055c2e013b133c159726ced21c8
+--- /dev/null
++++ b/backend/requirements-dev.txt
+@@ -0,0 +1,3 @@
++-r requirements.txt
++pytest
++httpx
+diff --git a/backend/services/extraction_service.py b/backend/services/extraction_service.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..64a6a93097e75edcbe7c4638a935a447871d28a9
+--- /dev/null
++++ b/backend/services/extraction_service.py
+@@ -0,0 +1,57 @@
++"""Extrae texto del original persistido, sin alterar sus bytes."""
++from pathlib import Path
++from zipfile import ZipFile
++from backend.core.exceptions import PipelineError
++
++SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt", ".md"}
++
++
++def _table_text(table) -> list[str]:
++    return [" | ".join(cell.text for cell in row.cells) for row in table.rows]
++
++
++def _shape_text(shapes) -> list[str]:
++    parts = []
++    for shape in shapes:
++        if shape.has_text_frame:
++            parts.append(shape.text_frame.text)
++        if shape.has_table:
++            parts.extend(_table_text(shape.table))
++        if hasattr(shape, "shapes"):
++            parts.extend(_shape_text(shape.shapes))
++    return parts
++
++
++def extraer_texto(path: Path) -> str:
++    try:
++        extension = path.suffix.lower()
++        if extension in {".docx", ".pptx"}:
++            with ZipFile(path) as archive:
++                if sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
++                    raise ValueError("Documento demasiado grande al descomprimir.")
++        if extension == ".pdf":
++            from pypdf import PdfReader
++            texto = "\n\n".join(page.extract_text() or "" for page in PdfReader(path).pages)
++        elif extension == ".docx":
++            from docx import Document
++            document = Document(path)
++            texto = "\n".join(
++                [paragraph.text for paragraph in document.paragraphs]
++                + [line for table in document.tables for line in _table_text(table)]
++            )
++        elif extension == ".pptx":
++            from pptx import Presentation
++            texto = "\n\n".join(
++                "\n".join(_shape_text(slide.shapes)) for slide in Presentation(path).slides
++            )
++        elif extension in {".txt", ".md"}:
++            texto = path.read_text(encoding="utf-8-sig")
++        else:
++            raise ValueError("Formato no admitido.")
++    except Exception as error:
++        raise PipelineError("extraccion", "No se pudo extraer el texto. Comprueba el formato, "
++                            "la integridad y el tamaño del documento.", 422) from error
++    if not texto.strip():
++        raise PipelineError("extraccion", "El documento no contiene texto extraíble. "
++                            "Los documentos escaneados requieren OCR, que no está incluido.", 422)
++    return texto.strip()
+diff --git a/backend/tests/test_pipeline.py b/backend/tests/test_pipeline.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f23ff7b846472f393317ef18002d776d8c2639f2
+--- /dev/null
++++ b/backend/tests/test_pipeline.py
+@@ -0,0 +1,148 @@
++"""Prueba el HTTP y disco reales; solo sustituye llamadas externas a Gemini."""
++from io import BytesIO
++import json
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++from pypdf import PdfWriter
++from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
++
++from backend.app import app
++from backend.core.config import settings
++from shared.module_loader import load_module
++from shared.contratos import ContenidoQuiz, ItemQuiz
++from evaluacion.schemas.juez import ResultadoJuez, VeredictoItem
++from evaluacion.services import evaluador
++
++TEXT = "Una VCN es una red privada virtual de Oracle Cloud Infrastructure."
++PARAMS = {"perfil_destinatario": "Principiante", "formato_salida": "Quiz Interactivo con Justificaciones",
++          "nicho_sector": "General", "nivel_detalle": "Didactico"}
++
++
++def document_bytes(extension):
++    buffer = BytesIO()
++    if extension == ".docx":
++        from docx import Document
++        document = Document()
++        document.add_paragraph(TEXT)
++        document.add_table(rows=1, cols=1).cell(0, 0).text = "Tabla VCN"
++        document.save(buffer)
++    elif extension == ".pptx":
++        from pptx import Presentation
++        document = Presentation()
++        slide = document.slides.add_slide(document.slide_layouts[1])
++        slide.shapes.title.text = "VCN"
++        slide.placeholders[1].text = TEXT
++        document.save(buffer)
++    elif extension == ".pdf":
++        writer = PdfWriter()
++        page = writer.add_blank_page(width=612, height=792)
++        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
++                                 NameObject("/Subtype"): NameObject("/Type1"),
++                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
++        page[NameObject("/Resources")] = DictionaryObject({
++            NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
++        stream = DecodedStreamObject()
++        stream.set_data(f"BT /F1 12 Tf 40 700 Td ({TEXT}) Tj ET".encode("ascii"))
++        page[NameObject("/Contents")] = writer._add_object(stream)
++        writer.write(buffer)
++    else:
++        return TEXT.encode("utf-8")
++    return buffer.getvalue()
++
++
++@pytest.fixture
++def client(tmp_path, monkeypatch):
++    monkeypatch.setattr(settings, "documents_path", str(tmp_path / "originales"))
++    monkeypatch.setattr(settings, "generated_path", str(tmp_path / "resultados"))
++    return TestClient(app)
++
++
++@pytest.fixture
++def gemini_offline(tmp_path, monkeypatch):
++    """El chunking, Chroma persistente, recuperación y evaluador siguen siendo reales."""
++    vector_db = load_module("ingesta_rag", "models.vector_db")
++    embeddings = load_module("ingesta_rag", "services.embedding_service")
++    monkeypatch.setattr(vector_db, "CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
++
++    class RemoteEmbeddings:
++        def embed_documents(self, texts):
++            return [[1.0, float("VCN" in text), 0.5] for text in texts]
++
++        def embed_query(self, text):
++            return [1.0, 1.0, 0.5]
++
++    monkeypatch.setattr(embeddings.GeminiEmbeddingsResiliente, "_obtener_instancia_embeddings",
++                        lambda self: RemoteEmbeddings())
++    generator = load_module("orquestacion_agentes", "main")
++    monkeypatch.setattr(generator, "_invocar_con_rotacion", lambda *args: ContenidoQuiz(
++        titulo="Redes VCN", introduccion_contextualizada="Repaso de redes privadas.",
++        items=[ItemQuiz(pregunta="¿Qué es una VCN?", opciones=["Red privada", "Disco"],
++                        respuesta_correcta="Red privada", justificacion=TEXT)],
++        conceptos_clave=["VCN"], tiempo_estimado_estudio_minutos=2,
++    ))
++    monkeypatch.setattr(evaluador, "_invocar_con_rotacion", lambda prompt: ResultadoJuez(
++        veredictos_items=[VeredictoItem(indice=0, veredicto="respaldado", justificacion=TEXT)],
++        claridad_pedagogica="Alta", observaciones="Información respaldada.",
++    ))
++
++
++@pytest.mark.parametrize("extension", [".pdf", ".docx", ".pptx"])
++def test_multipart_persiste_original_chroma_y_resultado(client, gemini_offline, extension):
++    original = document_bytes(extension)
++    response = client.post("/api/v1/adapt", data=PARAMS,
++                           files={"archivo": ("vcn" + extension, original)})
++    assert response.status_code == 200, response.json()
++    body = response.json()
++    local = body["almacenamiento_local"]
++    assert Path(local["documento_original"]).read_bytes() == original
++    assert Path(local["documento_original"]).suffix == extension
++    assert json.loads(Path(local["resultado_generado"]).read_text(encoding="utf-8")) == body
++    assert body["evaluacion_calidad"]["anclaje_fuente_score"] == 1.0
++    assert body["metadatos"]["fragmentos_recuperados"] >= 1
++    assert "almacenamiento_oci" not in body
++    vector_db = load_module("ingesta_rag", "models.vector_db")
++    indexing = load_module("ingesta_rag", "services.indexing_service")
++    store = vector_db._obtener_vectorstore(indexing._embedding_service)
++    records = store.get(where={"doc_id": body["metadatos"]["doc_id"]})
++    assert TEXT in "\n".join(records["documents"])
++    assert (Path(vector_db.CHROMA_PERSIST_DIR) / "chroma.sqlite3").is_file()
++
++
++@pytest.mark.parametrize("name,data,status", [
++    ("vcn.exe", b"data", 415), ("vcn.pdf", b"", 413),
++    ("vcn.pdf", b"archivo corrupto", 422),
++])
++def test_upload_invalido_no_devuelve_exito(client, name, data, status):
++    response = client.post("/api/v1/adapt", data=PARAMS, files={"archivo": (name, data)})
++    assert response.status_code == status
++    assert "contenido_adaptado" not in response.json()
++
++
++def test_evaluacion_fallida_no_se_presenta_como_exito(client, gemini_offline, monkeypatch):
++    from shared.contratos import EvaluacionCalidad
++    from backend.services.evaluation_service import EvaluationService
++    monkeypatch.setattr(EvaluationService, "evaluar", lambda *args: EvaluacionCalidad(
++        anclaje_fuente_score=0, claridad_pedagogica="No evaluada", observaciones="Sin cuota"))
++    response = client.post("/api/v1/adapt", data=PARAMS,
++                           files={"archivo": ("vcn.txt", TEXT.encode())})
++    assert response.status_code == 502
++    assert response.json()["detail"]["etapa"] == "evaluacion"
++    assert not Path(settings.generated_path).exists()
++
++
++def test_error_externo_no_filtra_detalles(client, monkeypatch):
++    from backend.services.rag_service import RagService
++    def fail(*args):
++        raise RuntimeError("credencial-que-no-debe-aparecer")
++    monkeypatch.setattr(RagService, "indexar", fail)
++    response = client.post("/api/v1/adapt", data=PARAMS,
++                           files={"archivo": ("vcn.txt", TEXT.encode())})
++    assert response.status_code == 502
++    assert response.json()["detail"]["etapa"] == "indexacion"
++    assert "credencial-que-no-debe-aparecer" not in response.text
++
++
++def test_json_antiguo_se_rechaza(client):
++    assert client.post("/api/v1/adapt", json=PARAMS).status_code == 422
+diff --git a/docs/ejecucion-local.md b/docs/ejecucion-local.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b730b0dd788fb7f33f5cf067d803e6995faabf95
+--- /dev/null
++++ b/docs/ejecucion-local.md
+@@ -0,0 +1,102 @@
++# Ejecución real en Windows
++
++Ejecutar desde la raíz del repositorio. Cada comando usa su propio entorno.
++
++```powershell
++.venv-backend/Scripts/python.exe -m pip install -r backend/requirements.txt
++.venv-frontend/Scripts/python.exe -m pip install -r interfaz/requirements.txt
++```
++
++La configuración se carga desde el `.env` de la raíz, independientemente del directorio de trabajo.
++Las variables existentes del proceso tienen prioridad. `.env.example` enumera los nombres admitidos.
++El `.env` real no debe versionarse. Los clientes Gemini mantienen TLS verificado con certificados del sistema.
++
++En una terminal:
++
++```powershell
++.venv-backend/Scripts/python.exe -X utf8 -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
++```
++
++En otra terminal:
++
++```powershell
++.venv-frontend/Scripts/python.exe -X utf8 -m streamlit run interfaz/app.py
++```
++
++`GET /api/v1/health` comprueba el proceso API. El prefijo puede cambiar con `API_PREFIX`.
++La URL del backend en Streamlit se configura con `BACKEND_URL`; `API_TIMEOUT_SECONDS` controla su espera.
++Tras modificar el `.env`, reiniciar ambos procesos.
++
++## Contrato de adaptación
++
++`POST /api/v1/adapt` ahora recibe `multipart/form-data`, en lugar del JSON anterior:
++
++- `archivo`: archivo original PDF, DOCX, PPTX, TXT o MD.
++- `perfil_destinatario`, `formato_salida`, `nicho_sector`, `nivel_detalle`: campos de formulario.
++
++Acepta `Flashcards` y `Quiz`, además de las dos etiquetas correspondientes de la interfaz.
++El frontend envía el original sin decodificarlo. El backend valida, guarda sus bytes, extrae el texto,
++indexa con el módulo RAG, recupera contexto filtrado por `doc_id`, genera, evalúa y guarda la respuesta.
++No hay respuestas simuladas en el flujo de ejecución.
++
++Los originales quedan en `DOCUMENTS_PATH`, con un UUID como prefijo y su extensión original.
++La respuesta JSON completa queda en `GENERATED_PATH`. Chroma persiste en `CHROMA_PERSIST_DIR`.
++Todas las rutas relativas se resuelven contra la raíz del repositorio.
++La respuesta incluye `almacenamiento_local` y `metadatos.doc_id`; no declara una subida a OCI.
++`almacenamiento_oci` es opcional para conservar compatibilidad con su contrato anterior.
++
++Un error devuelve HTTP 4xx/5xx con `detail.etapa` y `detail.mensaje`, sin mensajes externos que puedan
++contener credenciales. Si Gemini no logra evaluar, la adaptación no se presenta como completa.
++El original y cualquier índice ya creado se conservan si una etapa posterior falla; no hay rollback
++ni reanudación automática. Reintentar crea una nueva indexación.
++
++## Límites actuales
++
++- Máximo inicial: 10 MiB por archivo (`MAX_UPLOAD_MB`).
++- DOCX/PPTX: límite de 50 MiB de contenido descomprimido.
++- No incluye OCR ni extracción del texto contenido únicamente en imágenes, gráficos o SmartArt.
++- DOCX extrae párrafos y tablas; PPTX extrae cuadros de texto, tablas y grupos de formas.
++- Una adaptación simultánea por proceso; usar un solo worker. Las adicionales reciben HTTP 429.
++- Los reintentos de embeddings están limitados por `MAX_EMBEDDING_ATTEMPTS`.
++- Un timeout del cliente no cancela necesariamente el trabajo del backend.
++
++## Verificación
++
++```powershell
++.venv-backend/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
++.venv-backend/Scripts/python.exe -m pytest backend/tests evaluacion/tests -q
++.venv-backend/Scripts/python.exe -m pytest orquestacion-agentes/tests -q
++.venv-frontend/Scripts/python.exe -m unittest discover -s interfaz/tests -v
++```
++
++Las pruebas automáticas de integración usan Chroma y almacenamiento reales en directorios temporales;
++solo sustituyen las llamadas externas a Gemini. Las pruebas de interfaz verifican el envío multipart
++y que los errores no se conviertan en resultados ficticios.
++
++Para consultar acceso a los modelos sin imprimir credenciales:
++
++```powershell
++.venv-backend/Scripts/python.exe scripts/check_gemini_models.py
++```
++
++La siguiente verificación consume cuota real de Gemini y crea originales, índices y resultados locales:
++
++```powershell
++.venv-backend/Scripts/python.exe scripts/verify_real_pipeline.py
++```
++
++Para verificar también el cliente Streamlit contra HTTP real, sin abrir un navegador:
++
++```powershell
++.venv-backend/Scripts/python.exe scripts/verify_real_pipeline.py --streamlit
++```
++
++Esta opción levanta un Uvicorn temporal en un puerto libre y lo cierra al terminar, sin tocar
++los servidores existentes. Usa AppTest con el estado producido por la carga de archivo y deja
++que Streamlit envíe el multipart real; no sustituye requests, RAG ni Gemini.
++
++Para las dos VMs posteriores: instalar frontend y backend en entornos separados, incluir `shared/`
++en el despliegue backend, apuntar `BACKEND_URL` a la VM backend y configurar las tres rutas persistentes
++en el volumen montado. Este cambio no configura Nginx, OCI Object Storage ni servicios del sistema.
++
++El envío de archivo y parámetros sigue el contrato multipart de [FastAPI](https://fastapi.tiangolo.com/tutorial/request-forms-and-files/).
+diff --git a/interfaz/client_config.py b/interfaz/client_config.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ceb70cc6460675555d1fc09059d5089842edb17
+--- /dev/null
++++ b/interfaz/client_config.py
+@@ -0,0 +1,10 @@
++"""Configuración del cliente HTTP, sin importar componentes del backend."""
++import os
++from pathlib import Path
++from dotenv import load_dotenv
++
++load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
++BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
++API_PREFIX = os.getenv("API_PREFIX", "/api/v1").rstrip("/")
++ADAPT_URL = f"{BACKEND_URL}{API_PREFIX}/adapt"
++API_TIMEOUT_SECONDS = float(os.getenv("API_TIMEOUT_SECONDS", "300"))
+diff --git a/interfaz/tests/test_client.py b/interfaz/tests/test_client.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f4ca2129a77c705bfc51fcaa13d5ca80eab08abb
+--- /dev/null
++++ b/interfaz/tests/test_client.py
+@@ -0,0 +1,60 @@
++"""Verifica que Streamlit envíe bytes y no fabrique resultados ante errores."""
++from pathlib import Path
++import unittest
++from unittest.mock import Mock, patch
++
++from streamlit.testing.v1 import AppTest
++
++APP = Path(__file__).resolve().parents[1] / "app.py"
++
++
++class ClientTests(unittest.TestCase):
++    def preparar(self):
++        app = AppTest.from_file(str(APP))
++        app.session_state["paso_actual"] = 2
++        app.session_state["archivo_bytes"] = b"bytes originales de documento"
++        app.session_state["documento_titulo"] = "original.docx"
++        app.run()
++        self.assertEqual(len(app.exception), 0)
++        return app
++
++    def test_error_http_permanece_en_parametros_sin_resultado(self):
++        app = self.preparar()
++        response = Mock(ok=False, status_code=502)
++        response.json.return_value = {"detail": {"etapa": "generacion", "mensaje": "Sin cuota"}}
++        with patch("requests.post", return_value=response) as post:
++            app.button[-1].click().run()
++        self.assertEqual(app.session_state["paso_actual"], 2)
++        self.assertIsNone(app.session_state["resultado"])
++        self.assertIn("Sin cuota", app.error[0].value)
++        self.assertEqual(post.call_args.kwargs["files"]["archivo"][1], b"bytes originales de documento")
++        self.assertNotIn("json", post.call_args.kwargs)
++
++    def test_error_de_red_no_genera_contenido(self):
++        import requests
++        app = self.preparar()
++        with patch("requests.post", side_effect=requests.ConnectionError):
++            app.button[-1].click().run()
++        self.assertIsNone(app.session_state["resultado"])
++        self.assertEqual(len(app.error), 1)
++        self.assertEqual(len(app.exception), 0)
++
++    def test_resultado_real_se_muestra_con_almacenamiento_local(self):
++        app = self.preparar()
++        response = Mock(ok=True)
++        response.json.return_value = {
++            "status": "exito", "metadatos": {"formato_generado": "Flashcards de Memorización",
++                                             "doc_id": "documento-real"},
++            "contenido_adaptado": {"titulo": "Resultado API", "items": [{"frente": "VCN", "dorso": "Red"}]},
++            "evaluacion_calidad": {"anclaje_fuente_score": 1.0, "claridad_pedagogica": "Alta"},
++            "almacenamiento_local": {"documento_original": "original.docx", "resultado_generado": "resultado.json"},
++        }
++        with patch("requests.post", return_value=response):
++            app.button[-1].click().run()
++        self.assertEqual(app.session_state["paso_actual"], 3)
++        self.assertEqual(len(app.exception), 0)
++        self.assertIn("localmente", app.success[0].value)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/scripts/check_gemini_models.py b/scripts/check_gemini_models.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a389315dbfb3457883f203fe196ce7b0d985be7
+--- /dev/null
++++ b/scripts/check_gemini_models.py
+@@ -0,0 +1,46 @@
++"""Consulta acceso a modelos sin mostrar credenciales ni respuestas de error externas."""
++import os
++from pathlib import Path
++import sys
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from shared.config import ENV_FILE
++from shared.gemini_transport import gemini_client_args
++from google import genai
++
++
++def main():
++    keys = [key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(",") if key.strip()]
++    keys += [os.getenv(name, "").strip() for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY")]
++    keys = list(dict.fromkeys(key for key in keys if key))
++    if not keys:
++        print("No hay claves configuradas.")
++        return 1
++    try:
++        with genai.Client(api_key=keys[0], http_options={
++            "timeout": 20000, "client_args": gemini_client_args()
++        }) as client:
++            available = {model.name.removeprefix("models/"): model.supported_actions
++                         for model in client.models.list()}
++    except Exception as error:
++        print("No se pudo consultar el catálogo:", type(error).__name__)
++        cause = error
++        while cause is not None:
++            print("Causa:", type(cause).__name__, "errno:", getattr(cause, "errno", None),
++                  "TLS:", getattr(cause, "verify_code", None))
++            description = str(cause).lower()
++            print("Diagnóstico:", ", ".join(word for word in (
++                "certificate", "ssl", "10013", "getaddrinfo", "refused", "proxy", "timed out"
++            ) if word in description) or "sin categoría conocida")
++            cause = cause.__cause__
++        return 1
++    for variable in ("GEMINI_MODEL", "GEMINI_MODEL_RESPALDO", "MODELO_EMBEDDINGS"):
++        name = os.getenv(variable, "").removeprefix("models/")
++        print(variable, name, "DISPONIBLE" if name in available else "NO DISPONIBLE")
++    print("Modelos Flash disponibles:", ", ".join(name for name, actions in available.items()
++          if "flash" in name and "generateContent" in (actions or [])))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/verify_real_pipeline.py b/scripts/verify_real_pipeline.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fffea122718752c9de7e58a16602f3273b7bddb
+--- /dev/null
++++ b/scripts/verify_real_pipeline.py
+@@ -0,0 +1,138 @@
++"""Prueba multipart, persistencia y Gemini reales con documentos pequeños.
++
++Consume cuota de Gemini. Ejecutar con el Python del entorno backend.
++"""
++import argparse
++from io import BytesIO
++import json
++from pathlib import Path
++import sys
++import os
++import socket
++import subprocess
++import tempfile
++import time
++from urllib.request import urlopen
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++if hasattr(sys.stdout, "reconfigure"):
++    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
++
++from fastapi.testclient import TestClient
++from backend.app import app
++
++TEXT = (
++    "Una VCN (Virtual Cloud Network) es una red privada virtual en Oracle Cloud Infrastructure. "
++    "Una VCN contiene subredes. Las subredes alojan recursos como instancias de computo. "
++    "Las reglas de seguridad controlan el trafico entrante y saliente. "
++    "Las tablas de rutas determinan a donde se dirige el trafico de la red."
++)
++
++
++def sample(extension):
++    buffer = BytesIO()
++    if extension == "docx":
++        from docx import Document
++        document = Document()
++        document.add_heading("Redes VCN", 0)
++        document.add_paragraph(TEXT)
++        document.save(buffer)
++    elif extension == "pptx":
++        from pptx import Presentation
++        document = Presentation()
++        slide = document.slides.add_slide(document.slide_layouts[1])
++        slide.shapes.title.text = "Redes VCN"
++        slide.placeholders[1].text = TEXT
++        document.save(buffer)
++    else:
++        from pypdf import PdfWriter
++        from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
++        writer = PdfWriter()
++        page = writer.add_blank_page(width=612, height=792)
++        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
++                                 NameObject("/Subtype"): NameObject("/Type1"),
++                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
++        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"):
++            DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
++        stream = DecodedStreamObject()
++        stream.set_data(f"BT /F1 12 Tf 40 700 Td ({TEXT}) Tj ET".encode("ascii"))
++        page[NameObject("/Contents")] = writer._add_object(stream)
++        writer.write(buffer)
++    return buffer.getvalue()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--formats", nargs="+", choices=["pdf", "docx", "pptx"],
++                        default=["pdf", "docx", "pptx"])
++    parser.add_argument("--streamlit", action="store_true",
++                        help="Verifica Streamlit con un Uvicorn temporal y APIs reales.")
++    args = parser.parse_args()
++    if args.streamlit:
++        return verify_streamlit()
++    with TestClient(app) as client:
++        for extension in args.formats:
++            data = sample(extension)
++            response = client.post("/api/v1/adapt", data={
++                "perfil_destinatario": "Principiante", "formato_salida": "Quiz",
++                "nicho_sector": "General", "nivel_detalle": "Didactico",
++            }, files={"archivo": (f"verificacion-real.{extension}", data)})
++            if response.status_code != 200:
++                print(extension, "FALLO", response.status_code, response.json())
++                return 1
++            body = response.json()
++            local = body["almacenamiento_local"]
++            assert Path(local["documento_original"]).read_bytes() == data
++            assert json.loads(Path(local["resultado_generado"]).read_text(encoding="utf-8")) == body
++            assert body["metadatos"]["fragmentos_recuperados"] > 0
++            assert body["evaluacion_calidad"]["claridad_pedagogica"] != "No evaluada"
++            print(extension, "OK", "doc_id=" + body["metadatos"]["doc_id"],
++                  "items=" + str(len(body["contenido_adaptado"]["items"])))
++    return 0
++
++
++def verify_streamlit():
++    root = Path(__file__).resolve().parents[1]
++    with socket.socket() as sock:
++        sock.bind(("127.0.0.1", 0))
++        port = sock.getsockname()[1]
++    environment = dict(os.environ, BACKEND_URL=f"http://127.0.0.1:{port}", PYTHONUTF8="1")
++    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
++    process = subprocess.Popen([
++        sys.executable, "-X", "utf8", "-m", "uvicorn", "backend.app:app",
++        "--host", "127.0.0.1", "--port", str(port),
++    ], cwd=root, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++       creationflags=flags)
++    try:
++        from backend.core.config import settings
++        for _ in range(60):
++            if process.poll() is not None:
++                raise RuntimeError("El backend temporal no pudo arrancar.")
++            try:
++                with urlopen(f"http://127.0.0.1:{port}{settings.api_prefix}/health", timeout=1):
++                    break
++            except OSError:
++                time.sleep(0.5)
++        else:
++            raise RuntimeError("El backend temporal no respondió a health.")
++        frontend_python = root / ".venv-frontend" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
++        with tempfile.TemporaryDirectory() as directory:
++            original = Path(directory) / "verificacion-streamlit.docx"
++            original.write_bytes(sample("docx"))
++            resultado = subprocess.run([
++                str(frontend_python), "-X", "utf8", str(root / "scripts/verify_streamlit_real.py"),
++                str(original),
++            ], cwd=root, env=environment, timeout=420, creationflags=flags)
++            print("Streamlit HTTP real OK" if resultado.returncode == 0 else "Streamlit FALLO")
++            return resultado.returncode
++    finally:
++        process.terminate()
++        try:
++            process.wait(timeout=10)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait(timeout=10)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/verify_streamlit_real.py b/scripts/verify_streamlit_real.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ac9c298a86e56568e14fb9a2b953c5552adc4ba1
+--- /dev/null
++++ b/scripts/verify_streamlit_real.py
+@@ -0,0 +1,35 @@
++"""Ejecutar con el entorno frontend y un backend real ya disponible."""
++import argparse
++from pathlib import Path
++
++from streamlit.testing.v1 import AppTest
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("archivo", type=Path)
++    args = parser.parse_args()
++    root = Path(__file__).resolve().parents[1]
++    app = AppTest.from_file(str(root / "interfaz" / "app.py"), default_timeout=360)
++    # AppTest no implementa la carga interactiva de file_uploader.
++    # Se introduce exactamente el estado que produce el callback de carga.
++    app.session_state["paso_actual"] = 2
++    app.session_state["archivo_bytes"] = args.archivo.read_bytes()
++    app.session_state["documento_titulo"] = args.archivo.name
++    app.run()
++    app.button[-1].click().run(timeout=360)
++    if len(app.exception) or app.session_state["paso_actual"] != 3:
++        print("Streamlit FALLO:", app.session_state["error_generacion"]
++              if "error_generacion" in app.session_state else "Error de ejecución")
++        return 1
++    body = app.session_state["resultado"]
++    assert body["metadatos"]["doc_id"]
++    assert body["almacenamiento_local"]["status_guardado"] == "guardado"
++    assert body["evaluacion_calidad"]["claridad_pedagogica"] != "No evaluada"
++    assert Path(body["almacenamiento_local"]["documento_original"]).read_bytes() == args.archivo.read_bytes()
++    print("Streamlit HTTP real OK", "doc_id=" + body["metadatos"]["doc_id"])
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/shared/config.py b/shared/config.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3a69f1a18a6f779cfee8e137e6f0a6cdcd7db9c4
+--- /dev/null
++++ b/shared/config.py
+@@ -0,0 +1,12 @@
++"""El .env y las rutas relativas parten de la raíz del proyecto."""
++from pathlib import Path
++from dotenv import load_dotenv
++
++PROJECT_ROOT = Path(__file__).resolve().parents[1]
++ENV_FILE = PROJECT_ROOT / ".env"
++load_dotenv(ENV_FILE, override=False)
++
++
++def project_path(value: str) -> Path:
++    path = Path(value).expanduser()
++    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+diff --git a/shared/gemini_transport.py b/shared/gemini_transport.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9dc996ee766210d4d3c5556208a1b43f4e7b0692
+--- /dev/null
++++ b/shared/gemini_transport.py
+@@ -0,0 +1,12 @@
++"""TLS verificado con los certificados del sistema (incluye Windows)."""
++from functools import lru_cache
++import ssl
++
++
++@lru_cache(maxsize=1)
++def _ssl_context():
++    return ssl.create_default_context()
++
++
++def gemini_client_args():
++    return {"verify": _ssl_context(), "timeout": 60.0}
+diff --git a/shared/module_loader.py b/shared/module_loader.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..22cbf28ed75866b3190f7844cc94105ef1366c88
+--- /dev/null
++++ b/shared/module_loader.py
+@@ -0,0 +1,18 @@
++"""Nombres estables para los directorios Python que contienen guiones."""
++import importlib
++import sys
++from types import ModuleType
++from shared.config import PROJECT_ROOT
++
++PACKAGES = {"ingesta_rag": "ingesta-rag", "orquestacion_agentes": "orquestacion-agentes"}
++
++
++def load_module(package: str, module: str):
++    if package not in PACKAGES:
++        raise ValueError("Paquete de integración desconocido.")
++    if package not in sys.modules:
++        namespace = ModuleType(package)
++        namespace.__path__ = [str(PROJECT_ROOT / PACKAGES[package])]
++        namespace.__package__ = package
++        sys.modules[package] = namespace
++    return importlib.import_module(f"{package}.{module}")

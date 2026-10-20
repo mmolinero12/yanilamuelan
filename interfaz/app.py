@@ -15,7 +15,6 @@ import streamlit as st
 
 from pages import seccion1_carga, seccion2_parametros, seccion3_resultados
 from theme import inject_custom_css
-import  assets
 
 st.set_page_config(page_title="NuevaMente", page_icon="🎓", layout="centered")
 inject_custom_css()
@@ -72,19 +71,10 @@ st.divider()
 paso = st.session_state["paso_actual"]
 
 if paso == 1:
-    try:
-        seccion1_carga.render()
-    except (AttributeError, TypeError):
-        st.info("La vista 'Carga de Datos' aún está en desarrollo por el equipo.")
+    seccion1_carga.render()
 
 elif paso == 2:
-    try:
-        seccion2_parametros.render()
-    except (AttributeError, TypeError):
-        st.info("La vista 'Parámetros' aún está en desarrollo por el equipo.")
+    seccion2_parametros.render()
 
 elif paso == 3:
-    try:
-        seccion3_resultados.render()
-    except (AttributeError, TypeError):
-        st.info("La vista 'Resultados' aún está en desarrollo por el equipo.")
+    seccion3_resultados.render()

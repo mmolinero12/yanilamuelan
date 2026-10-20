@@ -24,6 +24,9 @@ def reiniciar_proceso():
     st.session_state["solicitud"] = {}
     st.session_state["quiz_respuestas"] = {}
     st.session_state["flash_idx"] = 0
+    for key in list(st.session_state):
+        if key in {"archivo_bytes", "archivo_temporal", "documento_titulo", "documento_contenido", "error_generacion"} or key.startswith(("flash_reveal_", "quiz_")):
+            del st.session_state[key]
     st.rerun()
 
 
@@ -71,6 +74,7 @@ def render() -> None:
             contenido = resultado.get("contenido_adaptado", {})
             calidad = resultado.get("evaluacion_calidad", {})
             oci = resultado.get("almacenamiento_oci", {})
+            local = resultado.get("almacenamiento_local", {})
 
             titulo = contenido.get("titulo", "Resultado de estudio")
             intro = contenido.get("introduccion_contextualizada", "")
@@ -139,7 +143,16 @@ def render() -> None:
 
             st.divider()
 
-            # Pie técnico OCI
+            if calidad.get("observaciones"):
+                st.caption(calidad["observaciones"])
+            if local:
+                st.success("Documento original y resultado guardados localmente.")
+                with st.expander("Archivos guardados"):
+                    st.write("Original:", local.get("documento_original"))
+                    st.write("Resultado JSON:", local.get("resultado_generado"))
+                    st.write("Documento en ChromaDB:", meta.get("doc_id"))
+
+            # OCI solo se muestra si la API devuelve un almacenamiento OCI real.
             if oci:
                 st.markdown(
                     f"""

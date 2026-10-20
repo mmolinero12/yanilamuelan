@@ -1,5 +1,9 @@
 Backend - Servicio de Adaptación
 
+> Guía vigente para el flujo real, entorno Windows y configuración centralizada:
+> [Ejecución local](../docs/ejecucion-local.md). El endpoint actual recibe multipart;
+> los ejemplos JSON y el archivo `.env` por módulo de esta documentación anterior ya no aplican.
+
 Este módulo contiene la API backend construida con FastAPI, encargada de gestionar los servicios de adaptación, RAG, orquestación, evaluación y almacenamiento.
 
 📁 Estructura del Proyecto

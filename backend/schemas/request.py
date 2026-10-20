@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class AdaptacionRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     documento_titulo: str = Field(min_length=1)
     documento_contenido: str = Field(min_length=1)
     perfil_destinatario: str = Field(min_length=1)

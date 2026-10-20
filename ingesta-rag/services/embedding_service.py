@@ -12,8 +12,9 @@ from typing import List
 from langchain_core.embeddings import Embeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-from utils.key_manager import KeyManager
-from utils.config import MODELO_EMBEDDINGS
+from ..utils.key_manager import KeyManager
+from ..utils.config import MODELO_EMBEDDINGS, MAX_EMBEDDING_ATTEMPTS
+from shared.gemini_transport import gemini_client_args
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,8 @@ class GeminiEmbeddingsResiliente(Embeddings):
 
         return GoogleGenerativeAIEmbeddings(
             model=nombre_limpio,
-            google_api_key=api_key_activa
+            google_api_key=api_key_activa,
+            client_args=gemini_client_args(),
         )
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
@@ -69,12 +71,14 @@ class GeminiEmbeddingsResiliente(Embeddings):
 
             fallos_consecutivos_429 = 0
             lote_completado = False
+            intentos_lote = 0
 
             while not lote_completado:
+                intentos_lote += 1
                 api_key_activa = self.key_manager.obtener_key_activa()
                 print(
                     f"   [DEBUG-EMBEDDINGS] Procesando lote {num_lote}/{total_lotes} "
-                    f"({len(batch)} chunks) con Key: ...{api_key_activa[-4:]} "
+                    f"({len(batch)} chunks) "
                     f"[Lote {lotes_consecutivos_key + 1}/{MAX_LOTES_POR_KEY} para esta Key]"
                 )
                 instancia = self._obtener_instancia_embeddings()
@@ -94,7 +98,7 @@ class GeminiEmbeddingsResiliente(Embeddings):
                     # Si la key actual ya procesó 2 lotes, rotamos a la siguiente preventivamente
                     if lotes_consecutivos_key >= MAX_LOTES_POR_KEY:
                         print(
-                            f"   [DEBUG-EMBEDDINGS] 🔄 Key ...{api_key_activa[-4:]} alcanzó el límite de "
+                            f"   [DEBUG-EMBEDDINGS] 🔄 Key [activa] alcanzó el límite de "
                             f"{MAX_LOTES_POR_KEY} lotes seguidos. Rotando preventivamente a la siguiente Key..."
                         )
                         self.key_manager.rotar_a_siguiente_valida()
@@ -109,13 +113,16 @@ class GeminiEmbeddingsResiliente(Embeddings):
                     )
 
                     if not es_cuota:
-                        logger.error(f"Error crítico no relacionado con cuotas en lote {num_lote}: {mensaje}")
-                        raise RuntimeError(f"Error fatal al generar embeddings en lote {num_lote}: {mensaje}") from e
+                        logger.error("Error de embeddings en lote %s (%s)", num_lote, type(e).__name__)
+                        raise RuntimeError("Falló la API de embeddings.") from e
+
+                    if intentos_lote >= MAX_EMBEDDING_ATTEMPTS:
+                        raise RuntimeError("Se agotaron los intentos de embeddings por cuota.") from e
 
                     fallos_consecutivos_429 += 1
                     lotes_consecutivos_key = 0  # Si falla, reiniciamos el conteo de la key
                     print(
-                        f"   [DEBUG-EMBEDDINGS] ⚠️ Cuota/RPM alcanzada en Key ...{api_key_activa[-4:]} "
+                        f"   [DEBUG-EMBEDDINGS] ⚠️ Cuota/RPM alcanzada en Key [activa] "
                         f"(Fallo consecutivo {fallos_consecutivos_429})."
                     )
 
@@ -161,8 +168,8 @@ class GeminiEmbeddingsResiliente(Embeddings):
                 print(f"   [DEBUG-EMBEDDINGS] ✅ Vector de consulta generado con dimensión: {len(vector)}")
                 return vector
             except Exception as e:
-                print(f"   [DEBUG-EMBEDDINGS] ❌ Error en intento {intento+1}: {str(e)}")
-                logger.error(f"Error al generar embedding de la consulta (intento {intento+1}): {str(e)}")
-                self.key_manager.marcar_key_invalida(key_actual, razon=str(e))
+                print(f"   [DEBUG-EMBEDDINGS] ❌ Error en intento {intento+1}: {type(e).__name__}")
+                logger.error("Error de consulta en intento %s (%s)", intento + 1, type(e).__name__)
+                self.key_manager.marcar_key_invalida(key_actual, razon=type(e).__name__)
 
         raise RuntimeError("Todas las API Keys de Gemini fallaron durante el embedding de la consulta.")
